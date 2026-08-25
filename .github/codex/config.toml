@@ -1,0 +1,23 @@
+[features]
+network_proxy = true
+
+[permissions.dependency-updates]
+description = "Update repository dependencies with restricted network access."
+extends = ":workspace"
+
+[permissions.dependency-updates.filesystem]
+glob_scan_max_depth = 6
+
+[permissions.dependency-updates.filesystem.":workspace_roots"]
+"**/*.env" = "deny"
+
+[permissions.dependency-updates.network]
+enabled = true
+
+[permissions.dependency-updates.network.domains]
+"registry.npmjs.org" = "allow"
+"registry.yarnpkg.com" = "allow"
+"**.github.com" = "allow"
+"**.githubusercontent.com" = "allow"
+"**.nodejs.org" = "allow"
+"**.bun.sh" = "allow"

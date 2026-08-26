@@ -1,12 +1,13 @@
 {
   "name": "@mrk-us/create-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Create a composable mrk.us application",
   "type": "module",
   "bin": {
     "create-app": "./dist/index.js"
   },
   "files": [
+    "biome.format.json",
     "dist",
     "README.md"
   ],
@@ -21,10 +22,10 @@
     "validate": "bun run check && bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
+    "@biomejs/biome": "2.5.10",
     "@clack/prompts": "1.7.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.10",
     "@types/bun": "1.4.0",
     "typescript": "7.0.2",
     "ultracite": "7.10.6"

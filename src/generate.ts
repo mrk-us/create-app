@@ -1,6 +1,7 @@
-import { lstat, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "bun";
+import { resolveSync, spawn } from "bun";
 import type { ProjectRequest } from "./domain";
 import { selectionId } from "./domain";
 
@@ -18,6 +19,17 @@ export interface GenerateProjectOptions {
   templatePath: string;
 }
 
+export interface TemplateCheckout {
+  cleanup: () => Promise<void>;
+  path: string;
+  source: "local" | "remote";
+}
+
+export interface TemplateSource {
+  commit: string;
+  repositoryUrl: string;
+}
+
 interface CommandOptions {
   command: string[];
   cwd: string;
@@ -28,6 +40,17 @@ const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
+export const TEMPLATE_COMMIT = "5e4f8ad5c214366e293839ee7941b565a4fad2a2";
+const DEFAULT_TEMPLATE_SOURCE = {
+  commit: TEMPLATE_COMMIT,
+  repositoryUrl: "https://github.com/mrk-us/starter-boilerplate.git",
+} satisfies TemplateSource;
+
+const PACKAGE_ROOT = resolve(import.meta.dir, "..");
+const biomeBinaryPath = (): string =>
+  resolveSync("@biomejs/biome/bin/biome", import.meta.dir);
+const biomeFormatConfigPath = (): string =>
+  join(PACKAGE_ROOT, "biome.format.json");
 
 const isJsonObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,21 +105,10 @@ export const runCommand = async ({
   return stdout.trim();
 };
 
-export const resolveTemplatePath = async (
-  explicitPath?: string
-): Promise<string> => {
-  const configuredPath = explicitPath ?? process.env.CREATE_APP_TEMPLATE_PATH;
-  if (!configuredPath) {
-    throw new Error(
-      "No template checkout configured. Set CREATE_APP_TEMPLATE_PATH or pass --template-path."
-    );
-  }
-
-  const templatePath = resolve(configuredPath);
+const validateTemplatePath = async (templatePath: string): Promise<string> => {
   const requiredPaths = [
     ".starter/compose.ts",
     ".starter/manifest.json",
-    "node_modules/.bin/biome",
     "package.json",
   ];
   const pathResults = await Promise.all(
@@ -117,6 +129,77 @@ export const resolveTemplatePath = async (
     cwd: templatePath,
   });
   return templatePath;
+};
+
+export const resolveTemplatePath = async (
+  explicitPath?: string
+): Promise<string> => {
+  const configuredPath = explicitPath ?? process.env.CREATE_APP_TEMPLATE_PATH;
+  if (!configuredPath) {
+    throw new Error("No local template checkout configured.");
+  }
+  return await validateTemplatePath(resolve(configuredPath));
+};
+
+export const checkoutTemplate = async (
+  source: TemplateSource = DEFAULT_TEMPLATE_SOURCE
+): Promise<TemplateCheckout> => {
+  const templatePath = await mkdtemp(join(tmpdir(), "create-app-template-"));
+  try {
+    await runCommand({
+      command: ["git", "init", "--quiet"],
+      cwd: templatePath,
+    });
+    await runCommand({
+      command: ["git", "remote", "add", "origin", source.repositoryUrl],
+      cwd: templatePath,
+    });
+    await runCommand({
+      command: ["git", "fetch", "--depth=1", "origin", source.commit],
+      cwd: templatePath,
+    });
+    await runCommand({
+      command: ["git", "checkout", "--detach", "--quiet", "FETCH_HEAD"],
+      cwd: templatePath,
+    });
+    const resolvedCommit = await runCommand({
+      command: ["git", "rev-parse", "HEAD"],
+      cwd: templatePath,
+    });
+    if (resolvedCommit !== source.commit) {
+      throw new Error(
+        `Template commit mismatch. Expected ${source.commit}, received ${resolvedCommit}.`
+      );
+    }
+    await validateTemplatePath(templatePath);
+    return {
+      cleanup: async () =>
+        await rm(templatePath, { force: true, recursive: true }),
+      path: templatePath,
+      source: "remote",
+    };
+  } catch (error) {
+    await rm(templatePath, { force: true, recursive: true });
+    const detail = error instanceof Error ? error.message : "Unknown error.";
+    throw new Error(
+      `Unable to download template commit ${source.commit}.\n${detail}`,
+      { cause: error }
+    );
+  }
+};
+
+export const resolveTemplate = async (
+  explicitPath?: string
+): Promise<TemplateCheckout> => {
+  const configuredPath = explicitPath ?? process.env.CREATE_APP_TEMPLATE_PATH;
+  if (!configuredPath) {
+    return await checkoutTemplate();
+  }
+  return {
+    cleanup: () => Promise.resolve(),
+    path: await validateTemplatePath(resolve(configuredPath)),
+    source: "local",
+  };
 };
 
 export const assertDestinationAvailable = async (
@@ -143,6 +226,10 @@ export const composeProject = async ({
       selectionId(request.selection),
       "--out",
       destination,
+      "--biome-bin",
+      biomeBinaryPath(),
+      "--biome-config",
+      biomeFormatConfigPath(),
     ],
     cwd: templatePath,
   });
@@ -168,11 +255,7 @@ const replaceRequired = ({
 export const applyProjectNaming = async ({
   destination,
   request,
-  templatePath,
-}: Pick<
-  GenerateProjectOptions,
-  "destination" | "request" | "templatePath"
->): Promise<void> => {
+}: Pick<GenerateProjectOptions, "destination" | "request">): Promise<void> => {
   const rootPackagePath = join(destination, "package.json");
   const rootPackage = await readJsonObject(rootPackagePath);
   rootPackage.name = request.slug;
@@ -246,11 +329,11 @@ export const applyProjectNaming = async ({
 
   await runCommand({
     command: [
-      join(templatePath, "node_modules/.bin/biome"),
+      biomeBinaryPath(),
       "format",
       "--write",
       "--config-path",
-      join(templatePath, "biome.jsonc"),
+      biomeFormatConfigPath(),
       ...formattedPaths,
     ],
     cwd: destination,

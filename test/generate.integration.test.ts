@@ -7,6 +7,7 @@ import { selectionId } from "../src/domain";
 import {
   applyProjectNaming,
   assertDestinationAvailable,
+  checkoutTemplate,
   composeProject,
   resolveTemplatePath,
   runCommand,
@@ -60,6 +61,37 @@ afterAll(async () => {
 describe("template integration", () => {
   test("recognizes the local template checkout", async () => {
     expect(await resolveTemplatePath(templateCheckout)).toBe(templateCheckout);
+  });
+
+  test("checks out and composes from an exact template commit", async () => {
+    const commit = await runCommand({
+      command: ["git", "rev-parse", "HEAD"],
+      cwd: templateCheckout,
+    });
+    const checkout = await checkoutTemplate({
+      commit,
+      repositoryUrl: templateCheckout,
+    });
+    const destination = join(outputRoot, "downloaded-next-plain");
+    try {
+      expect(await exists(join(checkout.path, "node_modules"))).toBe(false);
+      await composeProject({
+        destination,
+        request: request({
+          capability: "plain",
+          electron: false,
+          framework: "next",
+          marketing: false,
+        }),
+        templatePath: checkout.path,
+      });
+      expect(await exists(join(destination, "apps/app/package.json"))).toBe(
+        true
+      );
+    } finally {
+      await checkout.cleanup();
+    }
+    expect(await exists(checkout.path)).toBe(false);
   });
 
   test("the CLI selection IDs match the complete template matrix", async () => {
@@ -116,7 +148,6 @@ describe("template integration", () => {
     await applyProjectNaming({
       destination,
       request: projectRequest,
-      templatePath: templateCheckout,
     });
 
     const rootPackage = JSON.parse(
@@ -161,7 +192,6 @@ describe("template integration", () => {
     await applyProjectNaming({
       destination,
       request: projectRequest,
-      templatePath: templateCheckout,
     });
 
     const desktopPackage = JSON.parse(

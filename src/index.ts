@@ -16,7 +16,7 @@ import {
   checkProject,
   composeProject,
   installProject,
-  resolveTemplatePath,
+  resolveTemplate,
   typecheckProject,
 } from "./generate";
 import { runPreflight } from "./preflight";
@@ -148,7 +148,6 @@ const run = async (): Promise<void> => {
     return;
   }
 
-  const templatePath = await resolveTemplatePath(command.templatePath);
   intro("create-app");
 
   const request = await collectProjectRequest(clackPrompts);
@@ -156,21 +155,46 @@ const run = async (): Promise<void> => {
   await assertDestinationAvailable(destination);
   note(selectionSummary(request), "Project configuration");
 
+  const templateSpinner = spinner();
+  templateSpinner.start("Loading template");
+  const template = await resolveTemplate(command.templatePath).catch(
+    (error) => {
+      templateSpinner.error("Loading template failed");
+      throw error;
+    }
+  );
+  templateSpinner.stop(
+    template.source === "remote"
+      ? "Downloaded pinned template"
+      : "Using local template"
+  );
+
+  try {
+    await runTasks([
+      {
+        run: async () => {
+          await composeProject({
+            destination,
+            request,
+            templatePath: template.path,
+          });
+          return `Composed ${selectionId(request.selection)}`;
+        },
+        title: "Creating project files",
+      },
+      {
+        run: async () => {
+          await applyProjectNaming({ destination, request });
+          return `Named ${request.displayName}`;
+        },
+        title: "Applying project name",
+      },
+    ]);
+  } finally {
+    await template.cleanup();
+  }
+
   await runTasks([
-    {
-      run: async () => {
-        await composeProject({ destination, request, templatePath });
-        return `Composed ${selectionId(request.selection)}`;
-      },
-      title: "Creating project files",
-    },
-    {
-      run: async () => {
-        await applyProjectNaming({ destination, request, templatePath });
-        return `Named ${request.displayName}`;
-      },
-      title: "Applying project name",
-    },
     {
       enabled: !command.skipInstall,
       run: async () => {

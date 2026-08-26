@@ -302,7 +302,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request: convexRequest,
-      templatePath: templateCheckout,
     });
     const mutations: string[] = [];
     const convexEnvironmentUpdates: Record<string, string | undefined>[] = [];
@@ -336,7 +335,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];
@@ -449,7 +447,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];
@@ -482,7 +479,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];
@@ -516,7 +512,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];
@@ -571,7 +566,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];
@@ -623,7 +617,6 @@ describe("provider provisioning", () => {
     await applyProjectNaming({
       destination,
       request,
-      templatePath: templateCheckout,
     });
 
     const mutations: string[] = [];

@@ -5,11 +5,11 @@
     "": {
       "name": "@mrk-us/create-app",
       "dependencies": {
-        "@clack/prompts": "latest",
+        "@biomejs/biome": "2.5.10",
+        "@clack/prompts": "1.7.0",
       },
       "devDependencies": {
-        "@biomejs/biome": "2.5.10",
-        "@types/bun": "latest",
+        "@types/bun": "1.4.0",
         "typescript": "7.0.2",
         "ultracite": "7.10.6",
       },

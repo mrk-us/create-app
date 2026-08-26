@@ -3,8 +3,17 @@
 Interactive Bun CLI for composing projects from
 [`mrk-us/starter-boilerplate`](https://github.com/mrk-us/starter-boilerplate).
 
-Requires Bun 1.3.14 or newer and Node.js 22.11 or newer. The CLI checks the
-`node` executable on `PATH` before starting the prompts.
+Requires Bun 1.3.14 or newer, Node.js 22.11 or newer, and Git. The CLI checks
+the `node` executable on `PATH` before starting the prompts.
+
+Run the published CLI with:
+
+```sh
+bunx @mrk-us/create-app
+```
+
+The published CLI downloads and verifies the exact starter commit pinned to
+that CLI version. It does not generate from a moving branch.
 
 On the current development machine, activate the installed Node.js 22 runtime
 with:
@@ -28,9 +37,9 @@ Run against a local template checkout:
 CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate bun run dev
 ```
 
-The CLI creates the project in the current directory. The template checkout
-must have its dependencies installed because the current composer uses its
-local Biome executable.
+The CLI creates the project in the current directory. Setting
+`CREATE_APP_TEMPLATE_PATH` or passing `--template-path` replaces the pinned
+download with a local Git checkout for template development.
 
 Use `--skip-install` while iterating on prompts and file composition. It also
 skips the generated project's checks and provider setup:

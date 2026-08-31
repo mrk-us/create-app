@@ -59,6 +59,28 @@ afterAll(async () => {
 });
 
 describe("template integration", () => {
+  test("preserves stdout and stderr when a command fails", async () => {
+    let commandError: Error | undefined;
+    try {
+      await runCommand({
+        command: [
+          process.execPath,
+          "-e",
+          'console.log("compiler diagnostic"); console.error("runner summary"); process.exit(1)',
+        ],
+        cwd: outputRoot,
+      });
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      commandError = error;
+    }
+
+    expect(commandError?.message).toContain("compiler diagnostic");
+    expect(commandError?.message).toContain("runner summary");
+  });
+
   test("recognizes the local template checkout", async () => {
     expect(await resolveTemplatePath(templateCheckout)).toBe(templateCheckout);
   });

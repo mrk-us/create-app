@@ -40,7 +40,7 @@ const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
-export const TEMPLATE_COMMIT = "5e4f8ad5c214366e293839ee7941b565a4fad2a2";
+export const TEMPLATE_COMMIT = "15dde40fce37b863867e622bcb0ff88f8cbc80cf";
 const DEFAULT_TEMPLATE_SOURCE = {
   commit: TEMPLATE_COMMIT,
   repositoryUrl: "https://github.com/mrk-us/starter-boilerplate.git",
@@ -98,7 +98,10 @@ export const runCommand = async ({
   ]);
 
   if (exitCode !== 0) {
-    const detail = stderr.trim() || stdout.trim() || "No command output.";
+    const commandOutput = [stdout.trim(), stderr.trim()]
+      .filter((output) => output.length > 0)
+      .join("\n");
+    const detail = commandOutput || "No command output.";
     throw new Error(`${command.join(" ")} failed.\n${detail}`);
   }
 

@@ -2,6 +2,10 @@
   "name": "@mrk-us/create-app",
   "version": "0.1.4",
   "description": "Create a composable mrk.us application",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrk-us/create-app"
+  },
   "type": "module",
   "bin": {
     "create-app": "dist/index.js"

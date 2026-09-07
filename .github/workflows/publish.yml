@@ -22,6 +22,15 @@ jobs:
     steps:
       - name: Check out main
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: create-app
+
+      - name: Check out the pinned template
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: starter-boilerplate
+          ref: 5f4b13590f021ef99a08dc4735bd5bd71db96b0a
+          repository: mrk-us/starter-boilerplate
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -36,13 +45,20 @@ jobs:
 
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+        working-directory: create-app
+
+      - name: Install pinned template dependencies
+        run: bun install --frozen-lockfile
+        working-directory: starter-boilerplate
 
       - name: Validate package
         run: bun run validate
+        working-directory: create-app
 
       - name: Check package version
         id: package
         shell: bash
+        working-directory: create-app
         run: |
           package_name="$(node --print "require('./package.json').name")"
           package_version="$(node --print "require('./package.json').version")"
@@ -56,3 +72,4 @@ jobs:
       - name: Publish package
         if: steps.package.outputs.publish == 'true'
         run: npm publish --access public --provenance
+        working-directory: create-app

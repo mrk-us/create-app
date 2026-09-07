@@ -14,7 +14,7 @@ export const HELP_TEXT = `Usage: create-app [options]
 
 Options:
   --template-path <path>  Use a local starter-boilerplate checkout
-  --skip-install          Skip dependency installation and static checks
+  --skip-install          Skip installs, checks, provider setup, and init commit
   --skip-checks           Install dependencies without running static checks
   --skip-provision        Generate provider files without creating resources
   --resume <path>         Resume provider setup in a generated project

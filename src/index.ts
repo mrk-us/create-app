@@ -14,8 +14,10 @@ import {
   applyProjectNaming,
   assertDestinationAvailable,
   checkProject,
+  commitProject,
   composeProject,
   installProject,
+  installProjectSkills,
   resolveTemplate,
   typecheckProject,
 } from "./generate";
@@ -140,6 +142,17 @@ const run = async (): Promise<void> => {
     const destination = resolve(command.path);
     intro("create-app provider setup");
     const state = await runProviderSetup(destination);
+    await runTasks([
+      {
+        run: async () => {
+          const result = await commitProject(destination);
+          return result === "committed"
+            ? "Committed init"
+            : "Initial commit already exists";
+        },
+        title: "Creating initial commit",
+      },
+    ]);
     printProviderNotes(state);
     note(`cd ${destination}\nbun run dev`, "Next steps");
     outro(
@@ -219,6 +232,14 @@ const run = async (): Promise<void> => {
       },
       title: "Typechecking workspaces",
     },
+    {
+      enabled: !command.skipInstall,
+      run: async () => {
+        await installProjectSkills(destination);
+        return "Installed project skills";
+      },
+      title: "Installing project skills",
+    },
   ]);
 
   const providers = requiredProviders(request.selection);
@@ -231,6 +252,19 @@ const run = async (): Promise<void> => {
     const state = await runProviderSetup(destination);
     printProviderNotes(state);
   }
+
+  await runTasks([
+    {
+      enabled: !command.skipInstall,
+      run: async () => {
+        const result = await commitProject(destination);
+        return result === "committed"
+          ? "Committed init"
+          : "Initial commit already exists";
+      },
+      title: "Creating initial commit",
+    },
+  ]);
 
   note(`cd ${request.slug}\nbun run dev`, "Next steps");
   outro(`Created ${request.displayName}`);

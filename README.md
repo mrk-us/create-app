@@ -42,7 +42,8 @@ The CLI creates the project in the current directory. Setting
 download with a local Git checkout for template development.
 
 Use `--skip-install` while iterating on prompts and file composition. It also
-skips the generated project's checks and provider setup:
+skips the generated project's checks, skill installation, provider setup, and
+initial commit:
 
 ```sh
 CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
@@ -56,6 +57,25 @@ creating cloud resources:
 CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
   bun run dev --skip-provision
 ```
+
+## Project skills and initial commit
+
+Every normal generation installs the official Turborepo skill plus these core
+skills from `mrk-us/skills` under `.agents/skills`: `add-component-reference`,
+`choose-library`, `laws-of-ux`, `microcopy`, `organize-files`, and `park-that`.
+
+The selected architecture adds its own guidance:
+
+- Convex runs `bunx convex ai-files install`.
+- WorkOS installs `workos/skills`.
+- Clerk installs `clerk/skills` when the generated dependencies use Clerk.
+- Stripe installs the skills published by `https://docs.stripe.com`.
+- Resend installs `resend/resend-skills`.
+
+After project and provider setup completes, the CLI stages every generated
+file and creates the repository's first commit with the message `init`. If
+provider setup is interrupted, `--resume` creates that commit after setup
+finishes.
 
 ## Development provider setup
 

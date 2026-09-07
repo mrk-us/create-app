@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Capability, Framework, ProjectRequest } from "../src/domain";
@@ -8,7 +15,10 @@ import {
   applyProjectNaming,
   assertDestinationAvailable,
   checkoutTemplate,
+  commitProject,
   composeProject,
+  detectProjectSkillStack,
+  projectSkillCommands,
   resolveTemplatePath,
   runCommand,
 } from "../src/generate";
@@ -59,6 +69,82 @@ afterAll(async () => {
 });
 
 describe("template integration", () => {
+  test("builds skill commands from the selected architecture", () => {
+    const commandTexts = (stack: Parameters<typeof projectSkillCommands>[0]) =>
+      projectSkillCommands(stack).map((command) => command.slice(1).join(" "));
+    const coreCommand =
+      "x --bun skills add mrk-us/skills --skill add-component-reference choose-library laws-of-ux microcopy organize-files park-that --yes";
+    const turborepoCommand = "x --bun skills add vercel/turborepo --yes";
+    const convexCommand = "x --bun --no-install convex ai-files install";
+    const emptyStack = {
+      clerk: false,
+      convex: false,
+      resend: false,
+      stripe: false,
+      workos: false,
+    };
+
+    expect(commandTexts(emptyStack)).toEqual([coreCommand, turborepoCommand]);
+    expect(commandTexts({ ...emptyStack, clerk: true })).toEqual([
+      coreCommand,
+      turborepoCommand,
+      "x --bun skills add clerk/skills --yes",
+    ]);
+    expect(
+      commandTexts({
+        ...emptyStack,
+        convex: true,
+        resend: true,
+        workos: true,
+      })
+    ).toEqual([
+      coreCommand,
+      turborepoCommand,
+      convexCommand,
+      "x --bun skills add workos/skills --yes",
+      "x --bun skills add resend/resend-skills --yes",
+    ]);
+    expect(
+      commandTexts({
+        clerk: false,
+        convex: true,
+        resend: true,
+        stripe: true,
+        workos: true,
+      })
+    ).toEqual([
+      coreCommand,
+      turborepoCommand,
+      convexCommand,
+      "x --bun skills add workos/skills --yes",
+      "x --bun skills add https://docs.stripe.com --yes",
+      "x --bun skills add resend/resend-skills --yes",
+    ]);
+  });
+
+  test("detects Clerk from generated package dependencies", async () => {
+    const destination = join(outputRoot, "clerk-stack");
+    await mkdir(join(destination, "apps/app"), { recursive: true });
+    await writeFile(
+      join(destination, "package.json"),
+      `${JSON.stringify({ devDependencies: { turbo: "^2.0.0" } })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(destination, "apps/app/package.json"),
+      `${JSON.stringify({ dependencies: { "@clerk/nextjs": "^7.0.0", convex: "^1.0.0" } })}\n`,
+      "utf8"
+    );
+
+    expect(await detectProjectSkillStack(destination)).toEqual({
+      clerk: true,
+      convex: true,
+      resend: false,
+      stripe: false,
+      workos: false,
+    });
+  });
+
   test("preserves stdout and stderr when a command fails", async () => {
     let commandError: Error | undefined;
     try {
@@ -195,6 +281,44 @@ describe("template integration", () => {
         cwd: destination,
       })
     ).toBe("0");
+
+    const exampleSkillPath = join(
+      destination,
+      ".agents/skills/example/SKILL.md"
+    );
+    await mkdir(join(destination, ".agents/skills/example"), {
+      recursive: true,
+    });
+    await writeFile(exampleSkillPath, "# Example\n", "utf8");
+    await runCommand({
+      command: ["git", "config", "user.name", "create-app test"],
+      cwd: destination,
+    });
+    await runCommand({
+      command: ["git", "config", "user.email", "create-app@example.com"],
+      cwd: destination,
+    });
+
+    expect(await commitProject(destination)).toBe("committed");
+    expect(
+      await runCommand({
+        command: ["git", "log", "-1", "--format=%s"],
+        cwd: destination,
+      })
+    ).toBe("init");
+    expect(
+      await runCommand({
+        command: ["git", "status", "--porcelain"],
+        cwd: destination,
+      })
+    ).toBe("");
+    expect(
+      await runCommand({
+        command: ["git", "ls-files", ".agents/skills/example/SKILL.md"],
+        cwd: destination,
+      })
+    ).toBe(".agents/skills/example/SKILL.md");
+    expect(await commitProject(destination)).toBe("already-initialized");
   });
 
   test("preserves Electron and applies its product name", async () => {
@@ -225,5 +349,12 @@ describe("template integration", () => {
     );
     expect(desktopPackage.productName).toBe('Acme "Books"');
     expect(electronBuilder).toContain('productName: "Acme \\"Books\\""');
+    expect(await detectProjectSkillStack(destination)).toEqual({
+      clerk: false,
+      convex: true,
+      resend: true,
+      stripe: false,
+      workos: true,
+    });
   });
 });

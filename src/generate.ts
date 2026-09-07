@@ -35,11 +35,46 @@ interface CommandOptions {
   cwd: string;
 }
 
+interface SkillInstallation {
+  command: string[];
+  expectedPaths: string[];
+}
+
+export interface ProjectSkillStack {
+  clerk: boolean;
+  convex: boolean;
+  resend: boolean;
+  stripe: boolean;
+  workos: boolean;
+}
+
+export type CommitProjectResult = "already-initialized" | "committed";
+
 const APP_NAME_DECLARATION_PATTERN = /^export const APP_NAME = .*;$/m;
 const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
+const CORE_AGENT_SKILLS = [
+  "add-component-reference",
+  "choose-library",
+  "laws-of-ux",
+  "microcopy",
+  "organize-files",
+  "park-that",
+];
+const PACKAGE_DEPENDENCY_SECTIONS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+];
+const PROJECT_PACKAGE_PATHS = [
+  "package.json",
+  join("apps", "app", "package.json"),
+  join("packages", "backend", "package.json"),
+  join("packages", "email", "package.json"),
+];
 export const TEMPLATE_COMMIT = "15dde40fce37b863867e622bcb0ff88f8cbc80cf";
 const DEFAULT_TEMPLATE_SOURCE = {
   commit: TEMPLATE_COMMIT,
@@ -106,6 +141,196 @@ export const runCommand = async ({
   }
 
   return stdout.trim();
+};
+
+const addSkillsCommand = (source: string, skills: string[] = []): string[] => [
+  process.execPath,
+  "x",
+  "--bun",
+  "skills",
+  "add",
+  source,
+  ...(skills.length > 0 ? ["--skill", ...skills] : []),
+  "--yes",
+];
+
+const coreSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("mrk-us/skills", CORE_AGENT_SKILLS),
+  expectedPaths: CORE_AGENT_SKILLS.map((skill) =>
+    join(".agents", "skills", skill, "SKILL.md")
+  ),
+});
+
+const turborepoSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("vercel/turborepo"),
+  expectedPaths: [join(".agents", "skills", "turborepo", "SKILL.md")],
+});
+
+const convexSkillInstallation = (): SkillInstallation => ({
+  command: [
+    process.execPath,
+    "x",
+    "--bun",
+    "--no-install",
+    "convex",
+    "ai-files",
+    "install",
+  ],
+  expectedPaths: [
+    join("packages", "backend", "convex", "_generated", "ai", "guidelines.md"),
+  ],
+});
+
+const workosSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("workos/skills"),
+  expectedPaths: [join(".agents", "skills", "workos", "SKILL.md")],
+});
+
+const clerkSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("clerk/skills"),
+  expectedPaths: [join(".agents", "skills", "clerk", "SKILL.md")],
+});
+
+const stripeSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("https://docs.stripe.com"),
+  expectedPaths: [
+    join(".agents", "skills", "stripe-best-practices", "SKILL.md"),
+  ],
+});
+
+const resendSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("resend/resend-skills"),
+  expectedPaths: [join(".agents", "skills", "resend", "SKILL.md")],
+});
+
+const projectSkillInstallations = (
+  stack: ProjectSkillStack
+): SkillInstallation[] => {
+  const installations = [coreSkillInstallation(), turborepoSkillInstallation()];
+  if (stack.convex) {
+    installations.push(convexSkillInstallation());
+  }
+  if (stack.workos) {
+    installations.push(workosSkillInstallation());
+  }
+  if (stack.clerk) {
+    installations.push(clerkSkillInstallation());
+  }
+  if (stack.stripe) {
+    installations.push(stripeSkillInstallation());
+  }
+  if (stack.resend) {
+    installations.push(resendSkillInstallation());
+  }
+  return installations;
+};
+
+export const projectSkillCommands = (stack: ProjectSkillStack): string[][] =>
+  projectSkillInstallations(stack).map(({ command }) => command);
+
+const dependencyNames = (packageJson: JsonObject): string[] =>
+  PACKAGE_DEPENDENCY_SECTIONS.flatMap((section) => {
+    const dependencies = packageJson[section];
+    return isJsonObject(dependencies) ? Object.keys(dependencies) : [];
+  });
+
+export const detectProjectSkillStack = async (
+  destination: string
+): Promise<ProjectSkillStack> => {
+  const packageJsons = await Promise.all(
+    PROJECT_PACKAGE_PATHS.map(async (relativePath) => {
+      const packagePath = join(destination, relativePath);
+      return (await pathExists(packagePath))
+        ? await readJsonObject(packagePath)
+        : null;
+    })
+  );
+  const packageNames = new Set<string>();
+  for (const packageJson of packageJsons) {
+    if (!packageJson) {
+      continue;
+    }
+    for (const packageName of dependencyNames(packageJson)) {
+      packageNames.add(packageName);
+    }
+  }
+
+  return {
+    clerk: [...packageNames].some((name) => name.startsWith("@clerk/")),
+    convex: packageNames.has("convex"),
+    resend:
+      packageNames.has("resend") ||
+      packageNames.has("@convex-dev/resend") ||
+      [...packageNames].some((name) => name.startsWith("@resend/")),
+    stripe:
+      packageNames.has("stripe") ||
+      packageNames.has("@convex-dev/stripe") ||
+      [...packageNames].some((name) => name.startsWith("@stripe/")),
+    workos: [...packageNames].some((name) => name.startsWith("@workos-inc/")),
+  };
+};
+
+const runSkillInstallations = async (
+  destination: string,
+  installations: SkillInstallation[]
+): Promise<void> => {
+  const [installation, ...remainingInstallations] = installations;
+  if (!installation) {
+    return;
+  }
+
+  await runCommand({ command: installation.command, cwd: destination });
+  const missingPaths = (
+    await Promise.all(
+      installation.expectedPaths.map(async (expectedPath) => ({
+        exists: await pathExists(join(destination, expectedPath)),
+        expectedPath,
+      }))
+    )
+  ).filter(({ exists }) => !exists);
+  if (missingPaths.length > 0) {
+    throw new Error(
+      `${installation.command.join(" ")} did not install ${missingPaths
+        .map(({ expectedPath }) => expectedPath)
+        .join(", ")}.`
+    );
+  }
+
+  await runSkillInstallations(destination, remainingInstallations);
+};
+
+export const installProjectSkills = async (
+  destination: string
+): Promise<void> => {
+  const stack = await detectProjectSkillStack(destination);
+  await runSkillInstallations(destination, projectSkillInstallations(stack));
+};
+
+export const commitProject = async (
+  destination: string
+): Promise<CommitProjectResult> => {
+  const commitCount = await runCommand({
+    command: ["git", "rev-list", "--all", "--count"],
+    cwd: destination,
+  });
+  if (commitCount !== "0") {
+    return "already-initialized";
+  }
+
+  const status = await runCommand({
+    command: ["git", "status", "--porcelain"],
+    cwd: destination,
+  });
+  if (status.length === 0) {
+    throw new Error("The generated repository has no files to commit.");
+  }
+
+  await runCommand({ command: ["git", "add", "--all"], cwd: destination });
+  await runCommand({
+    command: ["git", "commit", "--no-verify", "--message", "init"],
+    cwd: destination,
+  });
+  return "committed";
 };
 
 const validateTemplatePath = async (templatePath: string): Promise<string> => {

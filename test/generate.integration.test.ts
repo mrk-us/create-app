@@ -75,16 +75,23 @@ describe("template integration", () => {
     const coreCommand =
       "x --bun skills add mrk-us/skills --skill add-component-reference choose-library laws-of-ux microcopy organize-files park-that --yes";
     const turborepoCommand = "x --bun skills add vercel/turborepo --yes";
+    const nextjsCommand = "x --bun skills add vercel/next.js --yes";
     const convexCommand = "x --bun --no-install convex ai-files install";
     const emptyStack = {
       clerk: false,
       convex: false,
+      nextjs: false,
       resend: false,
       stripe: false,
       workos: false,
     };
 
     expect(commandTexts(emptyStack)).toEqual([coreCommand, turborepoCommand]);
+    expect(commandTexts({ ...emptyStack, nextjs: true })).toEqual([
+      coreCommand,
+      turborepoCommand,
+      nextjsCommand,
+    ]);
     expect(commandTexts({ ...emptyStack, clerk: true })).toEqual([
       coreCommand,
       turborepoCommand,
@@ -108,6 +115,7 @@ describe("template integration", () => {
       commandTexts({
         clerk: false,
         convex: true,
+        nextjs: true,
         resend: true,
         stripe: true,
         workos: true,
@@ -115,6 +123,7 @@ describe("template integration", () => {
     ).toEqual([
       coreCommand,
       turborepoCommand,
+      nextjsCommand,
       convexCommand,
       "x --bun skills add workos/skills --yes",
       "x --bun skills add https://docs.stripe.com --yes",
@@ -139,10 +148,54 @@ describe("template integration", () => {
     expect(await detectProjectSkillStack(destination)).toEqual({
       clerk: true,
       convex: true,
+      nextjs: false,
       resend: false,
       stripe: false,
       workos: false,
     });
+  });
+
+  test("detects Next.js in app and marketing workspaces", async () => {
+    const nextDestinations = await Promise.all(
+      ["app", "web"].map(async (workspace) => {
+        const destination = join(outputRoot, `next-${workspace}-stack`);
+        await mkdir(join(destination, "apps", workspace), { recursive: true });
+        await writeFile(
+          join(destination, "package.json"),
+          `${JSON.stringify({ devDependencies: { turbo: "^2.0.0" } })}\n`,
+          "utf8"
+        );
+        await writeFile(
+          join(destination, `apps/${workspace}/package.json`),
+          `${JSON.stringify({ dependencies: { next: "16.0.0" } })}\n`,
+          "utf8"
+        );
+        return destination;
+      })
+    );
+    const nextDetections = await Promise.all(
+      nextDestinations.map((destination) =>
+        detectProjectSkillStack(destination)
+      )
+    );
+    expect(nextDetections.every(({ nextjs }) => nextjs)).toBe(true);
+
+    const tanstackDestination = join(outputRoot, "tanstack-only-stack");
+    await mkdir(join(tanstackDestination, "apps/app"), { recursive: true });
+    await writeFile(
+      join(tanstackDestination, "package.json"),
+      `${JSON.stringify({ devDependencies: { turbo: "^2.0.0" } })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(tanstackDestination, "apps/app/package.json"),
+      `${JSON.stringify({ dependencies: { "@tanstack/react-start": "^1.0.0" } })}\n`,
+      "utf8"
+    );
+
+    expect((await detectProjectSkillStack(tanstackDestination)).nextjs).toBe(
+      false
+    );
   });
 
   test("preserves stdout and stderr when a command fails", async () => {
@@ -352,6 +405,7 @@ describe("template integration", () => {
     expect(await detectProjectSkillStack(destination)).toEqual({
       clerk: false,
       convex: true,
+      nextjs: false,
       resend: true,
       stripe: false,
       workos: true,

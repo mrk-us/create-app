@@ -66,6 +66,8 @@ skills from `mrk-us/skills` under `.agents/skills`: `add-component-reference`,
 
 The selected architecture adds its own guidance:
 
+- Next.js installs the skills published by `vercel/next.js` when either the
+  marketing site or product app uses Next.js.
 - Convex runs `bunx convex ai-files install`.
 - WorkOS installs `workos/skills`.
 - Clerk installs `clerk/skills` when the generated dependencies use Clerk.

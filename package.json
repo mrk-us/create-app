@@ -1,6 +1,6 @@
 {
   "name": "@mrk-us/create-app",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Create a composable mrk.us application",
   "repository": {
     "type": "git",

@@ -43,6 +43,7 @@ interface SkillInstallation {
 export interface ProjectSkillStack {
   clerk: boolean;
   convex: boolean;
+  nextjs: boolean;
   resend: boolean;
   stripe: boolean;
   workos: boolean;
@@ -72,6 +73,7 @@ const PACKAGE_DEPENDENCY_SECTIONS = [
 const PROJECT_PACKAGE_PATHS = [
   "package.json",
   join("apps", "app", "package.json"),
+  join("apps", "web", "package.json"),
   join("packages", "backend", "package.json"),
   join("packages", "email", "package.json"),
 ];
@@ -166,6 +168,16 @@ const turborepoSkillInstallation = (): SkillInstallation => ({
   expectedPaths: [join(".agents", "skills", "turborepo", "SKILL.md")],
 });
 
+const nextjsSkillInstallation = (): SkillInstallation => ({
+  command: addSkillsCommand("vercel/next.js"),
+  expectedPaths: [
+    join(".agents", "skills", "next-cache-components-adoption", "SKILL.md"),
+    join(".agents", "skills", "next-cache-components-optimizer", "SKILL.md"),
+    join(".agents", "skills", "next-dev-loop", "SKILL.md"),
+    join(".agents", "skills", "next-partial-prefetching-adoption", "SKILL.md"),
+  ],
+});
+
 const convexSkillInstallation = (): SkillInstallation => ({
   command: [
     process.execPath,
@@ -207,6 +219,9 @@ const projectSkillInstallations = (
   stack: ProjectSkillStack
 ): SkillInstallation[] => {
   const installations = [coreSkillInstallation(), turborepoSkillInstallation()];
+  if (stack.nextjs) {
+    installations.push(nextjsSkillInstallation());
+  }
   if (stack.convex) {
     installations.push(convexSkillInstallation());
   }
@@ -258,6 +273,7 @@ export const detectProjectSkillStack = async (
   return {
     clerk: [...packageNames].some((name) => name.startsWith("@clerk/")),
     convex: packageNames.has("convex"),
+    nextjs: packageNames.has("next"),
     resend:
       packageNames.has("resend") ||
       packageNames.has("@convex-dev/resend") ||

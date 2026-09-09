@@ -75,9 +75,10 @@ The selected architecture adds its own guidance:
 - Resend installs `resend/resend-skills`.
 
 After project and provider setup completes, the CLI stages every generated
-file and creates the repository's first commit with the message `init`. If
-provider setup is interrupted, `--resume` creates that commit after setup
-finishes.
+file and creates the repository's first commit with the message `init` on
+`main`. It also creates a `production` branch at the same commit and leaves
+`main` checked out. If provider setup is interrupted, `--resume` creates the
+commit and both branches after setup finishes.
 
 ## Development provider setup
 

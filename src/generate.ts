@@ -341,9 +341,17 @@ export const commitProject = async (
     throw new Error("The generated repository has no files to commit.");
   }
 
+  await runCommand({
+    command: ["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+    cwd: destination,
+  });
   await runCommand({ command: ["git", "add", "--all"], cwd: destination });
   await runCommand({
     command: ["git", "commit", "--no-verify", "--message", "init"],
+    cwd: destination,
+  });
+  await runCommand({
+    command: ["git", "branch", "production", "main"],
     cwd: destination,
   });
   return "committed";

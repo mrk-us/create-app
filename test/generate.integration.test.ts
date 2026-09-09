@@ -351,14 +351,35 @@ describe("template integration", () => {
       command: ["git", "config", "user.email", "create-app@example.com"],
       cwd: destination,
     });
+    await runCommand({
+      command: ["git", "symbolic-ref", "HEAD", "refs/heads/trunk"],
+      cwd: destination,
+    });
 
     expect(await commitProject(destination)).toBe("committed");
+    expect(
+      await runCommand({
+        command: ["git", "branch", "--show-current"],
+        cwd: destination,
+      })
+    ).toBe("main");
     expect(
       await runCommand({
         command: ["git", "log", "-1", "--format=%s"],
         cwd: destination,
       })
     ).toBe("init");
+    expect(
+      await runCommand({
+        command: ["git", "rev-parse", "main"],
+        cwd: destination,
+      })
+    ).toBe(
+      await runCommand({
+        command: ["git", "rev-parse", "production"],
+        cwd: destination,
+      })
+    );
     expect(
       await runCommand({
         command: ["git", "status", "--porcelain"],

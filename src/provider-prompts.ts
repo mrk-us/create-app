@@ -1,4 +1,5 @@
 import {
+  type CANCEL_SYMBOL,
   confirm,
   isCancel,
   note,
@@ -30,7 +31,7 @@ export interface ProvisionPromptClient {
   stripeSetupMethod: () => Promise<StripeSetupMethod>;
 }
 
-const unwrapPrompt = <Value>(value: Value | symbol): Value => {
+const unwrapPrompt = <Value>(value: Value | typeof CANCEL_SYMBOL): Value => {
   if (isCancel(value)) {
     throw new PromptCancelledError();
   }

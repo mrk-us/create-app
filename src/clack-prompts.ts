@@ -1,4 +1,5 @@
 import {
+  type CANCEL_SYMBOL,
   cancel,
   confirm,
   isCancel,
@@ -20,7 +21,7 @@ export class PromptCancelledError extends Error {
   }
 }
 
-const unwrapPrompt = <Value>(value: Value | symbol): Value => {
+const unwrapPrompt = <Value>(value: Value | typeof CANCEL_SYMBOL): Value => {
   if (isCancel(value)) {
     cancel("Setup cancelled.");
     throw new PromptCancelledError();

@@ -60,9 +60,11 @@ CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
 
 ## Project skills and initial commit
 
-Every normal generation installs the official Turborepo skill plus these core
-skills from `mrk-us/skills` under `.agents/skills`: `add-component-reference`,
-`choose-library`, `laws-of-ux`, `microcopy`, `organize-files`, and `park-that`.
+Every normal generation installs the official Turborepo skill under
+`.agents/skills`.
+
+Install skills from [`mrk-us/skills`](https://github.com/mrk-us/skills) manually
+to choose which skills and versions to use.
 
 The selected architecture adds its own guidance:
 

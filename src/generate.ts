@@ -56,14 +56,6 @@ const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
-const CORE_AGENT_SKILLS = [
-  "add-component-reference",
-  "choose-library",
-  "laws-of-ux",
-  "microcopy",
-  "organize-files",
-  "park-that",
-];
 const PACKAGE_DEPENDENCY_SECTIONS = [
   "dependencies",
   "devDependencies",
@@ -145,23 +137,15 @@ export const runCommand = async ({
   return stdout.trim();
 };
 
-const addSkillsCommand = (source: string, skills: string[] = []): string[] => [
+const addSkillsCommand = (source: string): string[] => [
   process.execPath,
   "x",
   "--bun",
   "skills",
   "add",
   source,
-  ...(skills.length > 0 ? ["--skill", ...skills] : []),
   "--yes",
 ];
-
-const coreSkillInstallation = (): SkillInstallation => ({
-  command: addSkillsCommand("mrk-us/skills", CORE_AGENT_SKILLS),
-  expectedPaths: CORE_AGENT_SKILLS.map((skill) =>
-    join(".agents", "skills", skill, "SKILL.md")
-  ),
-});
 
 const turborepoSkillInstallation = (): SkillInstallation => ({
   command: addSkillsCommand("vercel/turborepo"),
@@ -218,7 +202,7 @@ const resendSkillInstallation = (): SkillInstallation => ({
 const projectSkillInstallations = (
   stack: ProjectSkillStack
 ): SkillInstallation[] => {
-  const installations = [coreSkillInstallation(), turborepoSkillInstallation()];
+  const installations = [turborepoSkillInstallation()];
   if (stack.nextjs) {
     installations.push(nextjsSkillInstallation());
   }

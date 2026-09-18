@@ -72,8 +72,6 @@ describe("template integration", () => {
   test("builds skill commands from the selected architecture", () => {
     const commandTexts = (stack: Parameters<typeof projectSkillCommands>[0]) =>
       projectSkillCommands(stack).map((command) => command.slice(1).join(" "));
-    const coreCommand =
-      "x --bun skills add mrk-us/skills --skill add-component-reference choose-library laws-of-ux microcopy organize-files park-that --yes";
     const turborepoCommand = "x --bun skills add vercel/turborepo --yes";
     const nextjsCommand = "x --bun skills add vercel/next.js --yes";
     const convexCommand = "x --bun --no-install convex ai-files install";
@@ -86,14 +84,12 @@ describe("template integration", () => {
       workos: false,
     };
 
-    expect(commandTexts(emptyStack)).toEqual([coreCommand, turborepoCommand]);
+    expect(commandTexts(emptyStack)).toEqual([turborepoCommand]);
     expect(commandTexts({ ...emptyStack, nextjs: true })).toEqual([
-      coreCommand,
       turborepoCommand,
       nextjsCommand,
     ]);
     expect(commandTexts({ ...emptyStack, clerk: true })).toEqual([
-      coreCommand,
       turborepoCommand,
       "x --bun skills add clerk/skills --yes",
     ]);
@@ -105,7 +101,6 @@ describe("template integration", () => {
         workos: true,
       })
     ).toEqual([
-      coreCommand,
       turborepoCommand,
       convexCommand,
       "x --bun skills add workos/skills --yes",
@@ -121,7 +116,6 @@ describe("template integration", () => {
         workos: true,
       })
     ).toEqual([
-      coreCommand,
       turborepoCommand,
       nextjsCommand,
       convexCommand,

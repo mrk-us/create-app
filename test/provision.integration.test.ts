@@ -260,6 +260,12 @@ afterAll(async () => {
 
 describe("provider provisioning", () => {
   test("uses the installed Convex version without downloading it", async () => {
+    const installedConvex = JSON.parse(
+      await readFile(
+        join(templateCheckout, "node_modules/convex/package.json"),
+        "utf8"
+      )
+    );
     const command = convexCommand("--version");
     expect(command).toEqual([
       process.execPath,
@@ -277,7 +283,7 @@ describe("provider provisioning", () => {
     expect(result).toMatchObject({
       exitCode: 0,
       stderr: "",
-      stdout: "1.45.0",
+      stdout: installedConvex.version,
     });
   });
 

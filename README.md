@@ -3,7 +3,7 @@
 Interactive Bun CLI for composing projects from
 [`mrk-us/starter-boilerplate`](https://github.com/mrk-us/starter-boilerplate).
 
-Requires Bun 1.3.14 or newer, Node.js 22.22.2+ on Node 22 or 24.15.0+, and Git. The CLI checks
+Requires Bun 1.3.14 or newer, Node.js 24.15.0 or newer, and Git. The CLI checks
 the `node` executable on `PATH` before starting the prompts.
 
 Run the published CLI with:
@@ -15,11 +15,11 @@ bunx @mrk-us/create-app
 The published CLI downloads and verifies the exact starter commit pinned to
 that CLI version. It does not generate from a moving branch.
 
-On the current development machine, activate the installed Node.js 22 runtime
+On the current development machine, activate the installed Node.js 24 runtime
 with:
 
 ```sh
-export PATH="$HOME/Library/Application Support/Herd/config/nvm/versions/node/v22.23.2/bin:$PATH"
+export PATH="$HOME/Library/Application Support/Herd/config/nvm/versions/node/v24.20.0/bin:$PATH"
 node --version
 ```
 

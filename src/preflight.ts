@@ -1,7 +1,7 @@
+import { semver } from "bun";
 import { runCommand } from "./generate";
 
-const MINIMUM_NODE_MAJOR = 22;
-const MINIMUM_NODE_MINOR = 11;
+const SUPPORTED_NODE_VERSIONS = "^22.22.2 || >=24.15.0";
 const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)/;
 
 interface NodeVersion {
@@ -36,13 +36,9 @@ export const assertSupportedNodeVersion = (versionOutput: string): void => {
     );
   }
 
-  const meetsMinimum =
-    version.major > MINIMUM_NODE_MAJOR ||
-    (version.major === MINIMUM_NODE_MAJOR &&
-      version.minor >= MINIMUM_NODE_MINOR);
-  if (!meetsMinimum) {
+  if (!semver.satisfies(versionOutput.trim(), SUPPORTED_NODE_VERSIONS)) {
     throw new Error(
-      `Node.js 22.11 or newer is required. PATH currently resolves node to ${versionOutput.trim()}.\nActivate Node.js 22, verify with "node --version", then run create-app again.`
+      `Node.js 22.22.2+ on Node 22, or 24.15.0+ is required. PATH currently resolves node to ${versionOutput.trim()}.\nActivate a supported Node.js version, verify with "node --version", then run create-app again.`
     );
   }
 };
@@ -56,7 +52,7 @@ export const runPreflight = async (): Promise<void> => {
     });
   } catch (error) {
     throw new Error(
-      'Node.js 22.11 or newer must be available on PATH. Verify with "node --version".',
+      'Node.js 22.22.2+ on Node 22, or 24.15.0+ must be available on PATH. Verify with "node --version".',
       { cause: error }
     );
   }

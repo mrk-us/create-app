@@ -11,14 +11,17 @@ describe("Node.js preflight", () => {
     expect(parseNodeVersion("not a version")).toBeNull();
   });
 
-  test("accepts Node.js 22.11 and newer", () => {
-    expect(() => assertSupportedNodeVersion("v22.11.0")).not.toThrow();
-    expect(() => assertSupportedNodeVersion("v24.0.0")).not.toThrow();
+  test("accepts supported Node.js releases", () => {
+    for (const version of ["v22.22.2", "v22.23.2", "v24.15.0", "v26.13.0"]) {
+      expect(() => assertSupportedNodeVersion(version)).not.toThrow();
+    }
   });
 
-  test("rejects the Node.js 20 runtime that breaks Ultracite", () => {
-    expect(() => assertSupportedNodeVersion("v20.19.5")).toThrow(
-      "Node.js 22.11 or newer is required. PATH currently resolves node to v20.19.5."
-    );
+  test("rejects releases outside the supported Node.js range", () => {
+    for (const version of ["v20.19.5", "v22.22.1", "v23.11.1", "v24.14.9"]) {
+      expect(() => assertSupportedNodeVersion(version)).toThrow(
+        "Node.js 22.22.2+ on Node 22, or 24.15.0+ is required."
+      );
+    }
   });
 });

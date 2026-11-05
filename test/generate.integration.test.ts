@@ -240,6 +240,10 @@ describe("template integration", () => {
       expect(await exists(join(destination, "apps/app/package.json"))).toBe(
         true
       );
+      const rootPackage = JSON.parse(
+        await readFile(join(destination, "package.json"), "utf8")
+      );
+      expect(rootPackage.engines.node).toBe(">=26.0.0");
     } finally {
       await checkout.cleanup();
     }

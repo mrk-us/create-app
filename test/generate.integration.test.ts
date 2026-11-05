@@ -21,6 +21,7 @@ import {
   projectSkillCommands,
   resolveTemplatePath,
   runCommand,
+  TEMPLATE_COMMIT,
 } from "../src/generate";
 
 const templateCheckout = resolve(import.meta.dir, "../../starter-boilerplate");
@@ -219,12 +220,8 @@ describe("template integration", () => {
   });
 
   test("checks out and composes from an exact template commit", async () => {
-    const commit = await runCommand({
-      command: ["git", "rev-parse", "HEAD"],
-      cwd: templateCheckout,
-    });
     const checkout = await checkoutTemplate({
-      commit,
+      commit: TEMPLATE_COMMIT,
       repositoryUrl: templateCheckout,
     });
     const destination = join(outputRoot, "downloaded-next-plain");

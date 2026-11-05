@@ -69,7 +69,7 @@ const PROJECT_PACKAGE_PATHS = [
   join("packages", "backend", "package.json"),
   join("packages", "email", "package.json"),
 ];
-export const TEMPLATE_COMMIT = "74bd63a6599ba5f35687604855ac1ae1c477a720";
+export const TEMPLATE_COMMIT = "b7fdadfacf4a6a7e0af0b3841496885b8a15ff43";
 const DEFAULT_TEMPLATE_SOURCE = {
   commit: TEMPLATE_COMMIT,
   repositoryUrl: "https://github.com/mrk-us/starter-boilerplate.git",

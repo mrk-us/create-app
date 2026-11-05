@@ -12,15 +12,22 @@ describe("Node.js preflight", () => {
   });
 
   test("accepts supported Node.js releases", () => {
-    for (const version of ["v24.15.0", "v24.20.0", "v26.13.0"]) {
+    for (const version of ["v26.0.0", "v26.13.0", "v27.0.0"]) {
       expect(() => assertSupportedNodeVersion(version)).not.toThrow();
     }
   });
 
   test("rejects releases outside the supported Node.js range", () => {
-    for (const version of ["v20.19.5", "v22.23.2", "v23.11.1", "v24.14.9"]) {
+    for (const version of [
+      "v20.19.5",
+      "v22.23.2",
+      "v23.11.1",
+      "v24.15.0",
+      "v24.20.0",
+      "v25.9.0",
+    ]) {
       expect(() => assertSupportedNodeVersion(version)).toThrow(
-        "Node.js 24.15.0 or newer is required."
+        "Node.js 26.0.0 or newer is required."
       );
     }
   });

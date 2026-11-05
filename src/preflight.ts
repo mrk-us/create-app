@@ -1,7 +1,7 @@
 import { semver } from "bun";
 import { runCommand } from "./generate";
 
-const SUPPORTED_NODE_VERSIONS = ">=24.15.0";
+const SUPPORTED_NODE_VERSIONS = ">=26.0.0";
 const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)/;
 
 interface NodeVersion {
@@ -38,7 +38,7 @@ export const assertSupportedNodeVersion = (versionOutput: string): void => {
 
   if (!semver.satisfies(versionOutput.trim(), SUPPORTED_NODE_VERSIONS)) {
     throw new Error(
-      `Node.js 24.15.0 or newer is required. PATH currently resolves node to ${versionOutput.trim()}.\nActivate a supported Node.js version, verify with "node --version", then run create-app again.`
+      `Node.js 26.0.0 or newer is required. PATH currently resolves node to ${versionOutput.trim()}.\nActivate a supported Node.js version, verify with "node --version", then run create-app again.`
     );
   }
 };
@@ -52,7 +52,7 @@ export const runPreflight = async (): Promise<void> => {
     });
   } catch (error) {
     throw new Error(
-      'Node.js 24.15.0 or newer must be available on PATH. Verify with "node --version".',
+      'Node.js 26.0.0 or newer must be available on PATH. Verify with "node --version".',
       { cause: error }
     );
   }

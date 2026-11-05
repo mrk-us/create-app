@@ -3,7 +3,7 @@
 Interactive Bun CLI for composing projects from
 [`mrk-us/starter-boilerplate`](https://github.com/mrk-us/starter-boilerplate).
 
-Requires Bun 1.3.14 or newer, Node.js 24.15.0 or newer, and Git. The CLI checks
+Requires Bun 1.4.4 or newer, Node.js 24.15.0 or newer, and Git. The CLI checks
 the `node` executable on `PATH` before starting the prompts.
 
 Run the published CLI with:

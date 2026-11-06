@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: starter-boilerplate
-          ref: deb31f13529e84a72cf9416d8bbc49ce318e350d
+          ref: 0ef17563793d2b4391e7a501f4f5dd5960325692
           repository: mrk-us/starter-boilerplate
 
       - name: Set up Node.js

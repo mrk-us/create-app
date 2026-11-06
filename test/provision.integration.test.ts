@@ -738,6 +738,119 @@ describe("provider provisioning", () => {
     expect((await stat(backendEnvPath)).mode % 0o1000).toBe(0o600);
   });
 
+  test.each(["claimable", "dashboard"] as const)(
+    "keeps the %s Stripe answers when an earlier stage fails",
+    async (method) => {
+      const destination = await generate(`stripe-earlier-failure-${method}`);
+      const baseExecutor = createExecutor(destination, [], []);
+      let failWebhook = true;
+      const execute: CommandExecutor = async (options) => {
+        if (failWebhook && has(options, "workos@0.21.1", "webhook", "create")) {
+          failWebhook = false;
+          return { exitCode: 1, stderr: "temporary failure", stdout: "" };
+        }
+        return await baseExecutor(options);
+      };
+
+      const firstCalls: string[] = [];
+      await expect(
+        provisionProject({
+          destination,
+          execute,
+          prompts: prompts(firstCalls, method),
+        })
+      ).rejects.toThrow("temporary failure");
+      expect(firstCalls).toContain("stripe-setup");
+
+      const resumedCalls: string[] = [];
+      await provisionProject({
+        destination,
+        execute,
+        prompts: prompts(resumedCalls, method),
+      });
+      expect(
+        resumedCalls.filter(
+          (call) =>
+            call === "stripe-setup" ||
+            call === "stripe-api-key" ||
+            call.startsWith("stripe-email")
+        )
+      ).toEqual([]);
+    }
+  );
+
+  test("asks for the Stripe answers again when the sandbox stage fails", async () => {
+    const destination = await generate("stripe-sandbox-failure");
+    const baseExecutor = createExecutor(destination, [], []);
+    let failSandbox = true;
+    const execute: CommandExecutor = async (options) => {
+      if (
+        failSandbox &&
+        has(options, "@stripe/cli@1.50.5", "sandbox", "create")
+      ) {
+        failSandbox = false;
+        return { exitCode: 1, stderr: "email rejected", stdout: "" };
+      }
+      return await baseExecutor(options);
+    };
+
+    await expect(
+      provisionProject({ destination, execute, prompts: prompts([]) })
+    ).rejects.toThrow("email rejected");
+
+    const resumedCalls: string[] = [];
+    await provisionProject({
+      destination,
+      execute,
+      prompts: prompts(resumedCalls),
+    });
+    expect(resumedCalls).toContain("stripe-setup");
+    expect(
+      resumedCalls.some((call) => call.startsWith("stripe-email"))
+    ).toBeTrue();
+  });
+
+  test("reports a possible duplicate after a lost sandbox or project reply", async () => {
+    const destination = await generate("create-attempt-lost-reply");
+    const baseExecutor = createExecutor(destination, [], []);
+    let failNext = "project";
+    const execute: CommandExecutor = async (options) => {
+      if (failNext === "project" && has(options, "project", "create")) {
+        failNext = "sandbox";
+        return { exitCode: 1, stderr: "connection lost", stdout: "" };
+      }
+      if (
+        failNext === "sandbox" &&
+        has(options, "@stripe/cli@1.50.5", "sandbox", "create")
+      ) {
+        failNext = "";
+        return { exitCode: 1, stderr: "connection lost", stdout: "" };
+      }
+      return await baseExecutor(options);
+    };
+
+    const reports: string[] = [];
+    const attempt = () =>
+      provisionProject({
+        destination,
+        execute,
+        prompts: prompts([]),
+        report: (message) => reports.push(message),
+      });
+
+    await expect(attempt()).rejects.toThrow("connection lost");
+    expect(reports.join("\n")).not.toContain("may have created");
+    await expect(attempt()).rejects.toThrow("connection lost");
+    expect(reports.join("\n")).toContain(
+      "An earlier attempt may have created a Convex project."
+    );
+    expect(reports.join("\n")).not.toContain("a Stripe sandbox.");
+    await attempt();
+    expect(reports.join("\n")).toContain(
+      "An earlier attempt may have created a Stripe sandbox."
+    );
+  });
+
   test("declining consent cancels setup and saves nothing", async () => {
     const destination = join(outputRoot, "declined-consent");
     await composeProject({
@@ -1081,7 +1194,9 @@ describe("provider provisioning", () => {
     const createCommands: string[][] = [];
     const execute: CommandExecutor = async (options) => {
       if (has(options, "@stripe/cli@1.50.5", "prices", "list")) {
-        const yearly = options.command.includes("--lookup-keys=pro_yearly");
+        const yearly = options.command.includes(
+          "--lookup-keys=acme-books_pro_yearly"
+        );
         return successful(
           JSON.stringify({
             data: [

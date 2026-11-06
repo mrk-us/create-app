@@ -58,6 +58,8 @@ export type CommitProjectResult =
 const APP_NAME_DECLARATION_PATTERN = /^export const APP_NAME = .*;$/m;
 const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
+const BILLING_CONSTANTS_PATH = "packages/backend/convex/billing/constants.ts";
+const STRIPE_LOOKUP_KEY_PATTERN = /"(pro_(?:monthly|yearly))"/g;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_APP_ID_PATTERN = /^appId: com\.starter\.app$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
@@ -638,6 +640,23 @@ const replaceRequired = ({
   return contents.replace(pattern, () => replacement);
 };
 
+// Stripe lookup keys are unique per account, so an app with other pricing would
+// collide with an earlier app on that account unless each app has its own keys.
+const namespaceStripeLookupKeys = async (
+  path: string,
+  slug: string
+): Promise<void> => {
+  const contents = await readFile(path, "utf8");
+  if (contents.match(STRIPE_LOOKUP_KEY_PATTERN)?.length !== 2) {
+    throw new Error(`Unable to find the Stripe lookup keys in ${path}.`);
+  }
+  await writeFile(
+    path,
+    contents.replace(STRIPE_LOOKUP_KEY_PATTERN, `"${slug}_$1"`),
+    "utf8"
+  );
+};
+
 export const applyProjectNaming = async ({
   destination,
   request,
@@ -720,6 +739,13 @@ export const applyProjectNaming = async ({
       "utf8"
     );
     formattedPaths.push("apps/desktop/package.json");
+  }
+
+  const billingConstantsPath = join(destination, BILLING_CONSTANTS_PATH);
+  if (await pathExists(billingConstantsPath)) {
+    await namespaceStripeLookupKeys(billingConstantsPath, request.slug);
+    await namespaceStripeLookupKeys(presetPath, request.slug);
+    formattedPaths.push(BILLING_CONSTANTS_PATH);
   }
 
   await runCommand({

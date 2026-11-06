@@ -23,13 +23,14 @@ jobs:
       - name: Check out main
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          fetch-depth: 0
           path: create-app
 
       - name: Check out the pinned template
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: starter-boilerplate
-          ref: 1cdecd7f8859ad2aa8cc2f1af77dc2bce7541331
+          ref: 0ef17563793d2b4391e7a501f4f5dd5960325692
           repository: mrk-us/starter-boilerplate
 
       - name: Set up Node.js
@@ -62,9 +63,13 @@ jobs:
         run: |
           package_name="$(node --print "require('./package.json').name")"
           package_version="$(node --print "require('./package.json').version")"
-          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+          if released_commit="$(npm view "${package_name}@${package_version}" gitHead 2>/dev/null)"; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "${package_name}@${package_version} is already published."
+            # TEMPLATE_COMMIT is in src/generate.ts, so this also covers the template pin.
+            if ! git diff --quiet "${released_commit}" HEAD -- src; then
+              echo "::warning::${package_name}@${package_version} is already published, but src/ or the template pin changed since that release. Bump the version in package.json to publish the changes."
+            fi
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi

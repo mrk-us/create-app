@@ -8,8 +8,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { StripeSetupMethod } from "./provider-prompts";
 
 export interface SetupState {
+  attemptedCreates?: string[];
   completedStages: string[];
   convex?: {
     deploymentName?: string;
@@ -50,6 +52,10 @@ export interface SetupState {
   };
   schemaVersion: 1;
   selectionId: string;
+  stripeSetup?: {
+    email?: string;
+    method: StripeSetupMethod;
+  };
   updatedAt: string;
 }
 

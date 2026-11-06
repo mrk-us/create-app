@@ -417,6 +417,29 @@ const markFailure = async (
   await writeSetupState(destination, state);
 };
 
+// These resources have no key to find them by, so a lost reply cannot be
+// recovered. Resume can only report that the earlier attempt may have made one.
+const recordCreateAttempt = async ({
+  destination,
+  report,
+  resource,
+  state,
+}: {
+  destination: string;
+  report: (message: string) => void;
+  resource: string;
+  state: SetupState;
+}): Promise<void> => {
+  if (state.attemptedCreates?.includes(resource)) {
+    report(
+      `An earlier attempt may have created a ${resource}. Check the provider dashboard and remove any duplicate.`
+    );
+    return;
+  }
+  state.attemptedCreates = [...(state.attemptedCreates ?? []), resource];
+  await writeSetupState(destination, state);
+};
+
 const isConvexLoggedIn = (result: CommandResult): boolean =>
   result.exitCode === 0 &&
   !CONVEX_LOGGED_OUT_PATTERN.test(`${result.stdout}\n${result.stderr}`);
@@ -437,6 +460,50 @@ const gitEmail = async (
   return result.exitCode === 0 && result.stdout.trim()
     ? result.stdout.trim()
     : undefined;
+};
+
+const collectStripeInputs = async ({
+  destination,
+  execute,
+  prompts,
+  state,
+}: {
+  destination: string;
+  execute: CommandExecutor;
+  prompts: ProvisionPromptClient;
+  state: SetupState;
+}): Promise<
+  Pick<ProviderInputs, "stripeApiKey" | "stripeEmail" | "stripeSetupMethod">
+> => {
+  await run(
+    execute,
+    { command: bunx(STRIPE_CLI, "--version"), cwd: destination },
+    "Stripe CLI preflight"
+  );
+  // A failed sandbox stage can come from these answers, so ask for them again.
+  const saved =
+    state.lastFailure?.stage === "stripe.sandbox"
+      ? undefined
+      : state.stripeSetup;
+  const stripeSetupMethod =
+    saved?.method ?? (await prompts.stripeSetupMethod());
+  if (stripeSetupMethod === "dashboard") {
+    const backendEnv = await readEnvFile(
+      join(destination, "packages/backend/.env.local")
+    );
+    return {
+      stripeApiKey:
+        (saved && backendEnv.STRIPE_SECRET_KEY) ??
+        (await prompts.stripeApiKey()),
+      stripeSetupMethod,
+    };
+  }
+  return {
+    stripeEmail:
+      saved?.email ??
+      (await prompts.stripeEmail(await gitEmail(destination, execute))),
+    stripeSetupMethod,
+  };
 };
 
 const collectInputs = async ({
@@ -529,32 +596,13 @@ const collectInputs = async ({
     );
   }
 
-  let stripeApiKey: string | undefined;
-  let stripeEmail: string | undefined;
-  let stripeSetupMethod: StripeSetupMethod | undefined;
-  if (preset.selection.payments && !hasStage(state, "stripe.sandbox")) {
-    await run(
-      execute,
-      { command: bunx(STRIPE_CLI, "--version"), cwd: destination },
-      "Stripe CLI preflight"
-    );
-    stripeSetupMethod = await prompts.stripeSetupMethod();
-    if (stripeSetupMethod === "dashboard") {
-      stripeApiKey = await prompts.stripeApiKey();
-    } else {
-      stripeEmail = await prompts.stripeEmail(
-        await gitEmail(destination, execute)
-      );
-    }
-  }
-
   return {
     convexTeam,
     ...(resendApiKey ? { resendApiKey } : {}),
     ...(resendFromEmail ? { resendFromEmail } : {}),
-    ...(stripeApiKey ? { stripeApiKey } : {}),
-    ...(stripeEmail ? { stripeEmail } : {}),
-    ...(stripeSetupMethod ? { stripeSetupMethod } : {}),
+    ...(preset.selection.payments && !hasStage(state, "stripe.sandbox")
+      ? await collectStripeInputs({ destination, execute, prompts, state })
+      : {}),
   };
 };
 
@@ -990,12 +1038,14 @@ const setupStripeSandbox = async ({
   execute,
   inputs,
   preset,
+  report,
   state,
 }: {
   destination: string;
   execute: CommandExecutor;
   inputs: ProviderInputs;
   preset: GeneratedPreset;
+  report: (message: string) => void;
   state: SetupState;
 }): Promise<void> => {
   const profileName = `create-app-${preset.project.slug}`;
@@ -1039,6 +1089,12 @@ const setupStripeSandbox = async ({
     email,
     "--non-interactive"
   );
+  await recordCreateAttempt({
+    destination,
+    report,
+    resource: "Stripe sandbox",
+    state,
+  });
   const output = await run(
     execute,
     { command: createCommand, cwd: destination },
@@ -1495,6 +1551,12 @@ const configureConvex = async ({
         "--",
         preset.project.displayName
       );
+      await recordCreateAttempt({
+        destination,
+        report,
+        resource: "Convex project",
+        state,
+      });
       const result = await execute({ command, cwd: destination });
       requireSuccess(result, command, "Convex project creation");
       const projectSlug = CONVEX_PROJECT_CREATED_PATTERN.exec(
@@ -1608,7 +1670,14 @@ const configureStripe = async ({
     name: "stripe.sandbox",
     report,
     runStageAction: async () => {
-      await setupStripeSandbox({ destination, execute, inputs, preset, state });
+      await setupStripeSandbox({
+        destination,
+        execute,
+        inputs,
+        preset,
+        report,
+        state,
+      });
     },
     state,
   });
@@ -1795,6 +1864,18 @@ export const provisionProject = async ({
       RESEND_API_KEY: inputs.resendApiKey,
       RESEND_FROM_EMAIL: inputs.resendFromEmail,
     });
+  }
+  if (inputs.stripeApiKey) {
+    await upsertEnvFile(join(destination, "packages/backend/.env.local"), {
+      STRIPE_SECRET_KEY: inputs.stripeApiKey,
+    });
+  }
+  if (inputs.stripeSetupMethod) {
+    state.stripeSetup = {
+      ...(inputs.stripeEmail ? { email: inputs.stripeEmail } : {}),
+      method: inputs.stripeSetupMethod,
+    };
+    await writeSetupState(destination, state);
   }
 
   const rootEnv = await configureConvex({

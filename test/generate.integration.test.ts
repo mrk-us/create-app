@@ -438,6 +438,37 @@ describe("template integration", () => {
     });
   });
 
+  test("gives each Stripe app its own price lookup keys", async () => {
+    const destination = join(outputRoot, "stripe-lookup-keys");
+    const projectRequest = request({
+      capability: "stripe",
+      electron: false,
+      framework: "next",
+      marketing: false,
+    });
+    await composeProject({
+      destination,
+      request: projectRequest,
+      templatePath: templateCheckout,
+    });
+    await applyProjectNaming({ destination, request: projectRequest });
+
+    const preset = JSON.parse(
+      await readFile(join(destination, ".starter/preset.json"), "utf8")
+    );
+    expect(
+      preset.provisioning.stripe.prices.map(
+        (price: { lookupKey: string }) => price.lookupKey
+      )
+    ).toEqual(["acme-books_pro_monthly", "acme-books_pro_yearly"]);
+    const constants = await readFile(
+      join(destination, "packages/backend/convex/billing/constants.ts"),
+      "utf8"
+    );
+    expect(constants).toContain('PRO_MONTHLY: "acme-books_pro_monthly"');
+    expect(constants).toContain('PRO_YEARLY: "acme-books_pro_yearly"');
+  });
+
   test("inserts replacement patterns in a project name literally", async () => {
     const destination = join(outputRoot, "replacement-patterns");
     const displayName = "Cash $& Carry $1 $$ $` $'";

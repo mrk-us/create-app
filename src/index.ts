@@ -89,20 +89,22 @@ const runProviderSetup = (destination: string): Promise<SetupState | null> =>
     report: (message) => log.step(message),
   });
 
+const installTask = (destination: string, enabled = true): TaskDefinition => ({
+  enabled,
+  run: async () => {
+    await installProject(destination);
+    return "Installed dependencies";
+  },
+  title: "Installing dependencies",
+});
+
 const prepareProject = async (
   destination: string,
   { checks, install }: { checks: boolean; install: boolean }
 ): Promise<void> => {
   let skillFailures: string[] = [];
   await runTasks([
-    {
-      enabled: install,
-      run: async () => {
-        await installProject(destination);
-        return "Installed dependencies";
-      },
-      title: "Installing dependencies",
-    },
+    installTask(destination, install),
     {
       enabled: checks,
       run: async () => {
@@ -150,6 +152,12 @@ const commitTask = (destination: string, enabled = true): TaskDefinition => ({
 });
 
 const printProviderNotes = (state: SetupState | null): void => {
+  if (state?.completedStages.includes("workos.webhook")) {
+    note(
+      "The app sends the verification and password reset emails from its webhook. In the WorkOS Dashboard, go to Emails > Configuration, select Manage, and turn off the default email verification and password reset emails. If they stay on, users get two emails for each event.\n\nhttps://workos.com/docs/authkit/custom-emails",
+      "Turn off the WorkOS default emails"
+    );
+  }
   if (state?.providers?.workos) {
     note(
       "WorkOS Actions are not configured. Setup generated a private placeholder so development can start. If you enable Actions later, replace WORKOS_ACTION_SECRET in packages/backend/.env.local and the Convex deployment with the Action signing secret from WorkOS.\n\nhttps://workos.com/docs/authkit/actions",
@@ -218,7 +226,10 @@ const run = async (): Promise<void> => {
     await assertGeneratedProject(destination);
     const state = await withResumeHint(destination, async () => {
       await assertGitIdentity(destination);
-      if (!(await isProjectPrepared(destination))) {
+      if (await isProjectPrepared(destination)) {
+        // The dependencies can be gone even when setup already started.
+        await runTasks([installTask(destination)]);
+      } else {
         await prepareProject(destination, { checks: true, install: true });
       }
       const providerState = await runProviderSetup(destination);

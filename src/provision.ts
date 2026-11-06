@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { spawn } from "bun";
 import { PromptCancelledError } from "./clack-prompts";
 import type {
@@ -20,8 +21,20 @@ const WORKOS_CLI = "workos@0.21.1";
 const RESEND_CLI = "resend-cli@2.16.0";
 const STRIPE_CLI = "@stripe/cli@1.50.5";
 const LOCAL_APP_URL = "http://localhost:3001";
-const PLACEHOLDER_WEBHOOK_SECRET = "whsec_create_app_initial_setup";
+const PLACEHOLDER_WEBHOOK_SECRET_BYTES = 32;
 const WORKOS_ACTION_SECRET_BYTES = 32;
+const CONVEX_DEPLOYMENT_SELECTORS = new Set([
+  "CONVEX_DEPLOYMENT",
+  "CONVEX_DEPLOY_KEY",
+  "CONVEX_SELF_HOSTED_ADMIN_KEY",
+  "CONVEX_SELF_HOSTED_URL",
+]);
+const CONVEX_LOGGED_OUT_PATTERN = /not logged in/i;
+const CONVEX_PROJECT_CREATED_PATTERN = /Created project (\S+) in team/;
+const REDACTED_SECRET = "[redacted]";
+const SECRET_ENV_NAME_PATTERN = /KEY|SECRET|TOKEN/;
+const SECRET_TOKEN_PATTERN = /\b(?:re|rk|rkcs|sk|whsec)_[\w-]{8,}/g;
+const SECRET_MINIMUM_LENGTH = 8;
 const STRIPE_MISSING_PRODUCT_PATTERN = /resource_missing|no such product/i;
 const STRIPE_SECRET_OUTPUT_PATTERN = /Secret key:\s+(\S+)/;
 const STRIPE_RUNTIME_KEY_PATTERN = /^(?:rkcs_|rk_test_|sk_test_)/;
@@ -125,10 +138,19 @@ const isRecord = (value: unknown): value is JsonRecord =>
 
 const commandText = (command: string[]): string => command.join(" ");
 
+// Bun loads `.env.local` from the current directory at startup, so these can
+// belong to a surrounding project. The Convex CLI would then target that project.
+const inheritedEnvironment = (): Record<string, string | undefined> =>
+  Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) => !CONVEX_DEPLOYMENT_SELECTORS.has(name)
+    )
+  );
+
 export const executeCommand: CommandExecutor = async (options) => {
   const subprocess = spawn(options.command, {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    env: { ...inheritedEnvironment(), ...options.env },
     stderr: options.interactive ? "inherit" : "pipe",
     stdin: options.interactive ? "inherit" : undefined,
     stdout: options.interactive ? "inherit" : "pipe",
@@ -151,10 +173,14 @@ export const executeCommand: CommandExecutor = async (options) => {
 const requireSuccess = (
   result: CommandResult,
   command: string[],
-  label?: string
+  label?: string,
+  interactive?: boolean
 ): string => {
   if (result.exitCode !== 0) {
-    const detail = result.stderr || result.stdout || "No command output.";
+    const detail =
+      result.stderr ||
+      result.stdout ||
+      (interactive ? "See the output above." : "No command output.");
     throw new Error(`${label ?? commandText(command)} failed.\n${detail}`);
   }
   return result.stdout;
@@ -165,7 +191,51 @@ const run = async (
   options: CommandOptions,
   label?: string
 ): Promise<string> =>
-  requireSuccess(await execute(options), options.command, label);
+  requireSuccess(
+    await execute(options),
+    options.command,
+    label,
+    options.interactive
+  );
+
+const redactSecrets = (text: string, knownSecrets: string[] = []): string =>
+  knownSecrets
+    .reduce(
+      (redacted, secret) => redacted.replaceAll(secret, REDACTED_SECRET),
+      text
+    )
+    .replace(SECRET_TOKEN_PATTERN, REDACTED_SECRET);
+
+// Failed command output reaches the setup state and the terminal. Successful
+// output stays intact because provisioning reads new secrets from it.
+const withRedactedFailures =
+  (destination: string, execute: CommandExecutor): CommandExecutor =>
+  async (options) => {
+    const result = await execute(options);
+    if (result.exitCode === 0) {
+      return result;
+    }
+    const [rootEnv, backendEnv] = await Promise.all([
+      readEnvFile(join(destination, ".env.local")),
+      readEnvFile(join(destination, "packages/backend/.env.local")),
+    ]);
+    const knownSecrets = Object.entries({
+      ...rootEnv,
+      ...backendEnv,
+      ...options.env,
+    }).flatMap(([name, value]) =>
+      value &&
+      value.length >= SECRET_MINIMUM_LENGTH &&
+      SECRET_ENV_NAME_PATTERN.test(name)
+        ? [value]
+        : []
+    );
+    return {
+      ...result,
+      stderr: redactSecrets(result.stderr, knownSecrets),
+      stdout: redactSecrets(result.stdout, knownSecrets),
+    };
+  };
 
 const parseJson = (value: string, label: string): JsonRecord => {
   try {
@@ -347,6 +417,10 @@ const markFailure = async (
   await writeSetupState(destination, state);
 };
 
+const isConvexLoggedIn = (result: CommandResult): boolean =>
+  result.exitCode === 0 &&
+  !CONVEX_LOGGED_OUT_PATTERN.test(`${result.stdout}\n${result.stderr}`);
+
 const oneTeamSlug = (status: string): string | undefined => {
   const matches = [...status.matchAll(/^\s*- .* \(([^)]+)\)$/gm)];
   return matches.length === 1 ? matches[0]?.[1] : undefined;
@@ -383,7 +457,7 @@ const collectInputs = async ({
     command: convexStatusCommand,
     cwd: destination,
   });
-  if (convexStatusResult.exitCode !== 0) {
+  if (!isConvexLoggedIn(convexStatusResult)) {
     const loginCommand = convexCommand("login");
     await run(
       execute,
@@ -396,6 +470,11 @@ const collectInputs = async ({
     });
   }
   requireSuccess(convexStatusResult, convexStatusCommand, "Convex login check");
+  if (!isConvexLoggedIn(convexStatusResult)) {
+    throw new Error(
+      "Convex login did not complete. Log in, then resume setup."
+    );
+  }
   const convexTeam =
     state.convex?.teamSlug ??
     process.env.CONVEX_TEAM ??
@@ -463,8 +542,9 @@ const collectInputs = async ({
     if (stripeSetupMethod === "dashboard") {
       stripeApiKey = await prompts.stripeApiKey();
     } else {
-      const suggestedEmail = await gitEmail(destination, execute);
-      stripeEmail = suggestedEmail ?? (await prompts.stripeEmail());
+      stripeEmail = await prompts.stripeEmail(
+        await gitEmail(destination, execute)
+      );
     }
   }
 
@@ -764,12 +844,59 @@ const createResendResources = async ({
   if (backendEnv.RESEND_WEBHOOK_SECRET) {
     return;
   }
+  const endpoint = `${siteUrl}${config.webhookPath}`;
+  const env = { RESEND_API_KEY: apiKey };
+  // Resend shows a signing secret only once. A webhook at this deployment's URL
+  // with no stored secret is left from an interrupted run, so replace it.
+  const listed = listData(
+    parseJson(
+      await run(
+        execute,
+        {
+          command: bunx(
+            RESEND_CLI,
+            "webhooks",
+            "list",
+            "--limit",
+            "100",
+            "--quiet"
+          ),
+          cwd: destination,
+          env,
+        },
+        "Resend webhook lookup"
+      ),
+      "Resend webhook lookup"
+    )
+  );
+  await Promise.all(
+    listed
+      .filter((entry) => entry.endpoint === endpoint)
+      .map((entry) =>
+        run(
+          execute,
+          {
+            command: bunx(
+              RESEND_CLI,
+              "webhooks",
+              "delete",
+              String(entry.id),
+              "--yes",
+              "--quiet"
+            ),
+            cwd: destination,
+            env,
+          },
+          "Resend webhook replacement"
+        )
+      )
+  );
   const webhookCommand = bunx(
     RESEND_CLI,
     "webhooks",
     "create",
     "--endpoint",
-    `${siteUrl}${config.webhookPath}`,
+    endpoint,
     "--events",
     ...config.events,
     "--quiet"
@@ -780,7 +907,7 @@ const createResendResources = async ({
       {
         command: webhookCommand,
         cwd: destination,
-        env: { RESEND_API_KEY: apiKey },
+        env,
       },
       "Resend webhook creation"
     ),
@@ -838,7 +965,7 @@ const stripeApiError = (response: JsonRecord): StripeApiError | undefined => {
 
 const throwStripeApiError = (label: string, error: StripeApiError): never => {
   throw new Error(
-    `${label} failed.\n${error.code ? `${error.code}: ` : ""}${error.message}`
+    `${label} failed.\n${error.code ? `${error.code}: ` : ""}${redactSecrets(error.message)}`
   );
 };
 
@@ -1149,7 +1276,8 @@ const ensureStripePrice = async ({
       `Stripe ${price.interval} price lookup`
     )
   );
-  const [existing] = listed;
+  const existing = listed.find((entry) => entry.active !== false);
+  const archivedId = listed.find((entry) => entry.active === false)?.id;
   if (existing) {
     const recurring = isRecord(existing.recurring) ? existing.recurring : {};
     const valid =
@@ -1181,7 +1309,16 @@ const ensureStripePrice = async ({
       `--recurring.interval=${price.interval}`,
       `--lookup-key=${price.lookupKey}`,
       "--confirm",
-      `--idempotency=create-app-${preset.project.slug}-${price.lookupKey}`,
+      // An archived price keeps its lookup key. The same idempotency key would
+      // return the archived price if this run created it within the last day.
+      ...(typeof archivedId === "string"
+        ? [
+            "--transfer-lookup-key=true",
+            `--idempotency=create-app-${preset.project.slug}-${price.lookupKey}-${archivedId}`,
+          ]
+        : [
+            `--idempotency=create-app-${preset.project.slug}-${price.lookupKey}`,
+          ]),
     ],
     `Stripe ${price.interval} price creation`
   );
@@ -1207,52 +1344,29 @@ const configureStripePortal = async ({
   if (!stripeState) {
     throw new Error("Stripe sandbox state is missing.");
   }
-  const configurations = listData(
-    await stripeJson(
-      destination,
-      execute,
-      stripeState.profileName,
-      [
-        "billing_portal",
-        "configurations",
-        "list",
-        "--is-default=true",
-        "--limit=1",
-      ],
-      "Stripe portal lookup"
-    )
-  );
-  const existingConfigurationId = configurations[0]?.id;
-  const settings = [
-    `--default-return-url=${preset.provisioning?.appUrl ?? LOCAL_APP_URL}/account/billing`,
-    "--features.customer-update.enabled=true",
-    "--features.customer-update.allowed-updates=name",
-    "--features.customer-update.allowed-updates=address",
-    "--features.invoice-history.enabled=true",
-    "--features.payment-method-update.enabled=true",
-    "--features.subscription-cancel.enabled=true",
-    "--features.subscription-cancel.mode=at_period_end",
-    "--confirm",
-  ];
   const configuration = await stripeJson(
     destination,
     execute,
     stripeState.profileName,
-    typeof existingConfigurationId === "string"
-      ? [
-          "billing_portal",
-          "configurations",
-          "update",
-          existingConfigurationId,
-          ...settings,
-        ]
-      : ["billing_portal", "configurations", "create", ...settings],
+    [
+      "billing_portal",
+      "configurations",
+      "create",
+      `--name=${preset.project.displayName}`,
+      `--default-return-url=${preset.provisioning?.appUrl ?? LOCAL_APP_URL}/account/billing`,
+      "--features.customer-update.enabled=true",
+      "--features.customer-update.allowed-updates=name",
+      "--features.customer-update.allowed-updates=address",
+      "--features.invoice-history.enabled=true",
+      "--features.payment-method-update.enabled=true",
+      "--features.subscription-cancel.enabled=true",
+      "--features.subscription-cancel.mode=at_period_end",
+      "--confirm",
+      `--idempotency=create-app-${preset.project.slug}-portal`,
+    ],
     "Stripe portal configuration"
   );
-  const configurationId =
-    typeof existingConfigurationId === "string"
-      ? existingConfigurationId
-      : configuration.id;
+  const configurationId = configuration.id;
   if (typeof configurationId !== "string") {
     throw new Error("Stripe did not return its portal configuration ID.");
   }
@@ -1286,7 +1400,9 @@ const createStripeWebhook = async ({
     backendEnvPath
   );
   const url = `${siteUrl}${config.webhookPath}`;
-  const existing = listData(
+  // Stripe shows a signing secret only once. An endpoint at this deployment's
+  // URL with no stored secret is left from an interrupted run, so replace it.
+  const listed = listData(
     await stripeJson(
       destination,
       execute,
@@ -1294,12 +1410,20 @@ const createStripeWebhook = async ({
       ["webhook_endpoints", "list", "--limit=100"],
       "Stripe webhook lookup"
     )
-  ).find((endpoint) => endpoint.url === url);
-  if (existing) {
-    throw new Error(
-      `A Stripe webhook already exists for ${url}, but its signing secret is not recoverable. Remove that endpoint, then resume setup.`
-    );
-  }
+  );
+  await Promise.all(
+    listed
+      .filter((endpoint) => endpoint.url === url)
+      .map((endpoint) =>
+        stripeJson(
+          destination,
+          execute,
+          stripeState.profileName,
+          ["webhook_endpoints", "delete", String(endpoint.id), "--confirm"],
+          "Stripe webhook replacement"
+        )
+      )
+  );
   const created = await stripeJson(
     destination,
     execute,
@@ -1311,7 +1435,6 @@ const createStripeWebhook = async ({
       `--api-version=${config.apiVersion}`,
       ...config.events.map((event) => `--enabled-events=${event}`),
       "--confirm",
-      `--idempotency=create-app-${preset.project.slug}-webhook`,
     ],
     "Stripe webhook creation"
   );
@@ -1367,17 +1490,24 @@ const configureConvex = async ({
       const command = convexCommand(
         "project",
         "create",
-        preset.project.slug,
         "--team",
-        inputs.convexTeam
+        inputs.convexTeam,
+        "--",
+        preset.project.displayName
       );
-      await run(
-        execute,
-        { command, cwd: destination },
-        "Convex project creation"
-      );
+      const result = await execute({ command, cwd: destination });
+      requireSuccess(result, command, "Convex project creation");
+      const projectSlug = CONVEX_PROJECT_CREATED_PATTERN.exec(
+        stripVTControlCharacters(`${result.stdout}\n${result.stderr}`)
+      )?.[1];
+      if (!projectSlug) {
+        throw new Error(
+          "Convex project creation did not report the project slug."
+        );
+      }
       state.convex = {
-        projectSlug: preset.project.slug,
+        projectSlug,
+        projectSlugConfirmed: true,
         teamSlug: inputs.convexTeam,
       };
     },
@@ -1391,19 +1521,30 @@ const configureConvex = async ({
     name: "convex.deployment",
     report,
     runStageAction: async () => {
+      const reference = `${team}:${project}:dev/create-app`;
       const command = convexCommand(
         "deployment",
         "create",
-        `${team}:${project}:dev/create-app`,
+        reference,
         "--type",
         "dev",
         "--select"
       );
-      await run(
-        execute,
-        { command, cwd: destination },
-        "Convex dev deployment creation"
-      );
+      const created = await execute({ command, cwd: destination });
+      // An interrupted run can leave this deployment in the project that setup
+      // created. Older setup states may name another app's project instead.
+      const adopted =
+        created.exitCode !== 0 &&
+        state.convex?.projectSlugConfirmed === true &&
+        (
+          await execute({
+            command: convexCommand("deployment", "select", reference),
+            cwd: destination,
+          })
+        ).exitCode === 0;
+      if (!adopted) {
+        requireSuccess(created, command, "Convex dev deployment creation");
+      }
       const rootEnv = await readEnvFile(join(destination, ".env.local"));
       const deploymentName = rootEnv.CONVEX_DEPLOYMENT;
       state.convex = {
@@ -1429,7 +1570,7 @@ const configureConvex = async ({
       execute,
       values: {
         WORKOS_ACTION_SECRET: actionSecret,
-        WORKOS_WEBHOOK_SECRET: PLACEHOLDER_WEBHOOK_SECRET,
+        WORKOS_WEBHOOK_SECRET: `whsec_${randomBytes(PLACEHOLDER_WEBHOOK_SECRET_BYTES).toString("base64url")}`,
       },
     });
   }
@@ -1613,11 +1754,12 @@ const finalEnvironment = async (
 
 export const provisionProject = async ({
   destination: destinationInput,
-  execute = executeCommand,
+  execute: unredactedExecute = executeCommand,
   prompts,
   report = () => undefined,
 }: ProvisionOptions): Promise<SetupState | null> => {
   const destination = resolve(destinationInput);
+  const execute = withRedactedFailures(destination, unredactedExecute);
   const preset = await readPreset(destination);
   if (!preset.selection.database) {
     return null;
@@ -1631,19 +1773,22 @@ export const provisionProject = async ({
     (await readSetupState(destination)) ?? initialState(destination, preset);
   await writeSetupState(destination, state);
 
-  const inputs = await collectInputs({
-    destination,
-    execute,
-    preset,
-    prompts,
-    state,
-  });
   if (!hasStage(state, "consent")) {
     if (!(await prompts.confirmProvisioning(provisioningSummary(preset)))) {
       throw new PromptCancelledError();
     }
     await completeStage(destination, state, "consent");
   }
+  const inputs = await collectInputs({
+    destination,
+    execute,
+    preset,
+    prompts,
+    state,
+  }).catch(async (error: unknown) => {
+    await markFailure(destination, state, "preflight", error);
+    throw error;
+  });
   // Saved here so a failure in an earlier stage does not ask again on resume.
   if (inputs.resendApiKey && inputs.resendFromEmail) {
     await upsertEnvFile(join(destination, "packages/backend/.env.local"), {

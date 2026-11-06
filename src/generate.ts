@@ -59,6 +59,7 @@ const APP_NAME_DECLARATION_PATTERN = /^export const APP_NAME = .*;$/m;
 const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
+const ELECTRON_APP_ID_PATTERN = /^appId: com\.starter\.app$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
 const WORKSPACE_PATTERN_EDGE_PATTERN = /^\.\/|\/$/g;
 const CONVEX_GENERATED_PATH = "packages/backend/convex/_generated";
@@ -691,6 +692,7 @@ export const applyProjectNaming = async ({
   ];
   if (await pathExists(desktopPackagePath)) {
     const desktopPackage = await readJsonObject(desktopPackagePath);
+    desktopPackage.author = request.displayName;
     desktopPackage.productName = request.displayName;
     await writeJsonObject(desktopPackagePath, desktopPackage);
 
@@ -699,10 +701,18 @@ export const applyProjectNaming = async ({
       "apps/desktop/electron-builder.yml"
     );
     const electronBuilder = await readFile(electronBuilderPath, "utf8");
+    const electronBuilderWithAppId = replaceRequired({
+      contents: electronBuilder,
+      label: "Electron app ID",
+      pattern: ELECTRON_APP_ID_PATTERN,
+      // The Windows installer derives its GUID from this ID, so two apps that
+      // share it install over each other
+      replacement: `appId: com.${request.slug}.app`,
+    });
     await writeFile(
       electronBuilderPath,
       replaceRequired({
-        contents: electronBuilder,
+        contents: electronBuilderWithAppId,
         label: "Electron product name",
         pattern: ELECTRON_PRODUCT_NAME_PATTERN,
         replacement: `productName: ${JSON.stringify(request.displayName)}`,

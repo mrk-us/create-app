@@ -74,6 +74,10 @@ describe("project names", () => {
       "Use at least one letter or number."
     );
     expect(validateProjectName("Acme Books")).toBeUndefined();
+    expect(validateProjectName("a".repeat(64))).toBeUndefined();
+    expect(validateProjectName("a".repeat(65))).toBe(
+      "Use a shorter name. The project folder name can have at most 64 characters."
+    );
   });
 });
 

@@ -32,6 +32,7 @@ export interface PromptClient {
 
 const SLUG_SEPARATOR_PATTERN = /[^a-z0-9]+/g;
 const SLUG_EDGE_PATTERN = /^-+|-+$/g;
+const MAX_SLUG_LENGTH = 64;
 
 export const projectSlug = (displayName: string): string =>
   displayName
@@ -50,6 +51,9 @@ export const validateProjectName = (
   }
   if (projectSlug(displayName).length === 0) {
     return "Use at least one letter or number.";
+  }
+  if (projectSlug(displayName).length > MAX_SLUG_LENGTH) {
+    return `Use a shorter name. The project folder name can have at most ${MAX_SLUG_LENGTH} characters.`;
   }
   return undefined;
 };

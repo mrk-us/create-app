@@ -1,4 +1,5 @@
-import { semver } from "bun";
+import { version as bunVersion, semver } from "bun";
+import packageJson from "../package.json" with { type: "json" };
 import { runCommand } from "./generate";
 
 const SUPPORTED_NODE_VERSIONS = ">=26.0.0";
@@ -43,7 +44,17 @@ export const assertSupportedNodeVersion = (versionOutput: string): void => {
   }
 };
 
+export const assertSupportedBunVersion = (version: string): void => {
+  if (!semver.satisfies(version, packageJson.engines.bun)) {
+    throw new Error(
+      `Bun ${packageJson.engines.bun} is required. This run uses Bun ${version}.\nRun "bun upgrade", then run create-app again.`
+    );
+  }
+};
+
 export const runPreflight = async (): Promise<void> => {
+  assertSupportedBunVersion(bunVersion);
+
   let versionOutput: string;
   try {
     versionOutput = await runCommand({

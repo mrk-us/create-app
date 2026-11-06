@@ -1,9 +1,10 @@
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { resolveSync, spawn } from "bun";
+import { dirname, join, relative, resolve } from "node:path";
+import { Glob, resolveSync, spawn } from "bun";
 import type { ProjectRequest } from "./domain";
 import { selectionId } from "./domain";
+import { setupStatePath } from "./setup-files";
 
 type JsonPrimitive = boolean | null | number | string;
 type JsonValue = JsonObject | JsonPrimitive | JsonValue[];
@@ -49,13 +50,18 @@ export interface ProjectSkillStack {
   workos: boolean;
 }
 
-export type CommitProjectResult = "already-initialized" | "committed";
+export type CommitProjectResult =
+  | "already-initialized"
+  | "committed"
+  | "updated-generated-files";
 
 const APP_NAME_DECLARATION_PATTERN = /^export const APP_NAME = .*;$/m;
 const APP_DESCRIPTION_DECLARATION_PATTERN =
   /^export const APP_DESCRIPTION = .*;$/m;
 const README_TITLE_PATTERN = /^# Starter monorepo$/m;
 const ELECTRON_PRODUCT_NAME_PATTERN = /^productName: Starter$/m;
+const WORKSPACE_PATTERN_EDGE_PATTERN = /^\.\/|\/$/g;
+const CONVEX_GENERATED_PATH = "packages/backend/convex/_generated";
 const PACKAGE_DEPENDENCY_SECTIONS = [
   "dependencies",
   "devDependencies",
@@ -137,6 +143,8 @@ export const runCommand = async ({
   return stdout.trim();
 };
 
+// With no agent list, a HOME with no agent directory installs for every agent.
+// Claude Code links to the .agents/skills copy that Codex reads directly.
 const addSkillsCommand = (source: string): string[] => [
   process.execPath,
   "x",
@@ -144,6 +152,9 @@ const addSkillsCommand = (source: string): string[] => [
   "skills",
   "add",
   source,
+  "--agent",
+  "claude-code",
+  "codex",
   "--yes",
 ];
 
@@ -270,15 +281,10 @@ export const detectProjectSkillStack = async (
   };
 };
 
-const runSkillInstallations = async (
+const runSkillInstallation = async (
   destination: string,
-  installations: SkillInstallation[]
+  installation: SkillInstallation
 ): Promise<void> => {
-  const [installation, ...remainingInstallations] = installations;
-  if (!installation) {
-    return;
-  }
-
   await runCommand({ command: installation.command, cwd: destination });
   const missingPaths = (
     await Promise.all(
@@ -295,26 +301,108 @@ const runSkillInstallations = async (
         .join(", ")}.`
     );
   }
+};
 
-  await runSkillInstallations(destination, remainingInstallations);
+/** Skills are optional, so a failure is returned as a command to retry. */
+export const runSkillInstallations = async (
+  destination: string,
+  installations: SkillInstallation[]
+): Promise<string[]> => {
+  const [installation, ...remainingInstallations] = installations;
+  if (!installation) {
+    return [];
+  }
+
+  const failures = await runSkillInstallation(destination, installation).then(
+    () => [],
+    () => [installation.command.join(" ")]
+  );
+  return [
+    ...failures,
+    ...(await runSkillInstallations(destination, remainingInstallations)),
+  ];
 };
 
 export const installProjectSkills = async (
   destination: string
-): Promise<void> => {
+): Promise<string[]> => {
   const stack = await detectProjectSkillStack(destination);
-  await runSkillInstallations(destination, projectSkillInstallations(stack));
+  return await runSkillInstallations(
+    destination,
+    projectSkillInstallations(stack)
+  );
+};
+
+export const assertGitIdentity = async (destination: string): Promise<void> => {
+  try {
+    await runCommand({
+      command: ["git", "var", "GIT_AUTHOR_IDENT"],
+      cwd: destination,
+    });
+    await runCommand({
+      command: ["git", "var", "GIT_COMMITTER_IDENT"],
+      cwd: destination,
+    });
+  } catch (error) {
+    throw new Error(
+      'Git needs your name and email to create the initial commit. Set them with:\ngit config --global user.name "Your Name"\ngit config --global user.email "you@example.com"',
+      { cause: error }
+    );
+  }
+};
+
+const countCommits = (destination: string): Promise<string> =>
+  runCommand({
+    command: ["git", "rev-list", "--all", "--count"],
+    cwd: destination,
+  });
+
+/**
+ * Installs, checks, and skills finish before provider setup writes its state,
+ * and the first commit comes after all of them.
+ */
+export const isProjectPrepared = async (
+  destination: string
+): Promise<boolean> =>
+  (await pathExists(setupStatePath(destination))) ||
+  (await countCommits(destination)) !== "0";
+
+// Provider setup can regenerate these tracked files after the first commit.
+const commitConvexGeneratedFiles = async (
+  destination: string
+): Promise<CommitProjectResult> => {
+  const status = await runCommand({
+    command: ["git", "status", "--porcelain", "--", CONVEX_GENERATED_PATH],
+    cwd: destination,
+  });
+  if (status.length === 0) {
+    return "already-initialized";
+  }
+
+  await runCommand({
+    command: ["git", "add", "--", CONVEX_GENERATED_PATH],
+    cwd: destination,
+  });
+  await runCommand({
+    command: [
+      "git",
+      "commit",
+      "--no-verify",
+      "--message",
+      "chore: update Convex generated files",
+      "--",
+      CONVEX_GENERATED_PATH,
+    ],
+    cwd: destination,
+  });
+  return "updated-generated-files";
 };
 
 export const commitProject = async (
   destination: string
 ): Promise<CommitProjectResult> => {
-  const commitCount = await runCommand({
-    command: ["git", "rev-list", "--all", "--count"],
-    cwd: destination,
-  });
-  if (commitCount !== "0") {
-    return "already-initialized";
+  if ((await countCommits(destination)) !== "0") {
+    return await commitConvexGeneratedFiles(destination);
   }
 
   const status = await runCommand({
@@ -446,6 +534,67 @@ export const assertDestinationAvailable = async (
   }
 };
 
+export const assertGeneratedProject = async (
+  destination: string
+): Promise<void> => {
+  if (!(await pathExists(join(destination, ".starter/preset.json")))) {
+    throw new Error(
+      `No generated project found at ${destination}. Check the path and try again.`
+    );
+  }
+};
+
+const readWorkspacePatterns = async (
+  directory: string
+): Promise<string[] | null> => {
+  try {
+    const { workspaces } = await readJsonObject(
+      join(directory, "package.json")
+    );
+    const patterns = isJsonObject(workspaces)
+      ? workspaces.packages
+      : workspaces;
+    return Array.isArray(patterns)
+      ? patterns
+          .filter((pattern) => typeof pattern === "string")
+          .map((pattern) => pattern.replace(WORKSPACE_PATTERN_EDGE_PATTERN, ""))
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const workspaceCovers = (patterns: string[], path: string): boolean => {
+  const matches = (pattern: string): boolean => new Glob(pattern).match(path);
+  return (
+    patterns.some((pattern) => !pattern.startsWith("!") && matches(pattern)) &&
+    !patterns.some(
+      (pattern) => pattern.startsWith("!") && matches(pattern.slice(1))
+    )
+  );
+};
+
+// Bun only considers the nearest ancestor that declares workspaces.
+export const assertOutsideParentWorkspace = async (
+  destination: string,
+  directory = dirname(destination)
+): Promise<void> => {
+  const patterns = await readWorkspacePatterns(directory);
+  if (patterns) {
+    if (workspaceCovers(patterns, relative(directory, destination))) {
+      throw new Error(
+        `${destination} is inside the Bun workspace at ${directory}, so bun install would fail. Run create-app outside that workspace, or remove the matching entry from "workspaces" in its package.json.`
+      );
+    }
+    return;
+  }
+
+  const parent = dirname(directory);
+  if (parent !== directory) {
+    await assertOutsideParentWorkspace(destination, parent);
+  }
+};
+
 export const composeProject = async ({
   destination,
   request,
@@ -485,7 +634,7 @@ const replaceRequired = ({
   if (!pattern.test(contents)) {
     throw new Error(`Unable to find ${label} while applying project name.`);
   }
-  return contents.replace(pattern, replacement);
+  return contents.replace(pattern, () => replacement);
 };
 
 export const applyProjectNaming = async ({

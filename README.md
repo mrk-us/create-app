@@ -43,7 +43,7 @@ download with a local Git checkout for template development.
 
 Use `--skip-install` while iterating on prompts and file composition. It also
 skips the generated project's checks, skill installation, provider setup, and
-initial commit:
+initial commit. Run `--resume` on the project to finish them:
 
 ```sh
 CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
@@ -51,7 +51,8 @@ CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
 ```
 
 Use `--skip-provision` to install and validate a generated project without
-creating cloud resources:
+creating cloud resources. Run `--resume` on the project to set up providers
+later:
 
 ```sh
 CREATE_APP_TEMPLATE_PATH=/Users/markus/Dev/starter-boilerplate \
@@ -76,11 +77,17 @@ The selected architecture adds its own guidance:
 - Stripe installs the skills published by `https://docs.stripe.com`.
 - Resend installs `resend/resend-skills`.
 
+Skills install for Claude Code and Codex, whichever agents the machine has. If
+a skill fails to install, the CLI prints the command to retry and setup
+continues.
+
 After project and provider setup completes, the CLI stages every generated
 file and creates the repository's first commit with the message `init` on
 `main`. It also creates a `production` branch at the same commit and leaves
 `main` checked out. If provider setup is interrupted, `--resume` creates the
-commit and both branches after setup finishes.
+commit and both branches after setup finishes. If provider setup on an already
+committed project regenerates Convex files, `--resume` commits them to `main`
+and leaves `production` at `init`.
 
 ## Development provider setup
 
@@ -124,8 +131,10 @@ then copy a restricted test key from Developers > API keys. A standard
 `sk_test_` sandbox key also works, but a restricted key is preferable.
 
 Setup progress lives in the ignored `.starter/setup-state.json`. The file
-contains resource IDs and stage status, not API keys or webhook secrets. Resume
-an interrupted local run with:
+contains resource IDs and stage status, not API keys or webhook secrets. When
+a project has no setup state and no commit yet, `--resume` first runs the
+install, checks, and skill installation that did not finish. Resume an
+interrupted local run with:
 
 ```sh
 bun run /Users/markus/Dev/create-app/src/index.ts --resume ./acme-books

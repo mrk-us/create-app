@@ -7,7 +7,7 @@ import {
   select,
   text,
 } from "@clack/prompts";
-import { PromptCancelledError } from "./clack-prompts";
+import { PromptCancelledError, requireTerminal } from "./clack-prompts";
 
 const CONVEX_DASHBOARD_URL = "https://dashboard.convex.dev/";
 const RESEND_API_KEYS_URL = "https://resend.com/api-keys";
@@ -57,7 +57,7 @@ const stripeTestKey = (value: string | undefined): string | undefined => {
   return undefined;
 };
 
-export const clackProviderPrompts: ProvisionPromptClient = {
+export const clackProviderPrompts: ProvisionPromptClient = requireTerminal({
   confirmProvisioning: async (summary) =>
     unwrapPrompt(
       await confirm({
@@ -86,7 +86,8 @@ export const clackProviderPrompts: ProvisionPromptClient = {
     unwrapPrompt(
       await text({
         initialValue: "onboarding@resend.dev",
-        message: "Resend sender email",
+        message:
+          "Resend sender email\nThe default test sender only delivers to your Resend account's address. Use a sender on a verified domain to email anyone else.",
         validate: email,
       })
     ).trim(),
@@ -154,4 +155,4 @@ export const clackProviderPrompts: ProvisionPromptClient = {
         ],
       })
     ),
-};
+});

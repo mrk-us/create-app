@@ -22,7 +22,7 @@ describe("environment files", () => {
     await writeFile(
       path,
       [
-        "CONVEX_DEPLOYMENT=dev:peaceful-poodle-533 # team: hi-mrk-us, project: cunt",
+        "CONVEX_DEPLOYMENT=dev:example-deployment-123 # team: example-team, project: example-project",
         'QUOTED="value # retained"',
         "",
       ].join("\n"),
@@ -30,7 +30,7 @@ describe("environment files", () => {
     );
 
     expect(await readEnvFile(path)).toEqual({
-      CONVEX_DEPLOYMENT: "dev:peaceful-poodle-533",
+      CONVEX_DEPLOYMENT: "dev:example-deployment-123",
       QUOTED: "value # retained",
     });
   });

@@ -1,5 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { assertSupportedNodeVersion, parseNodeVersion } from "../src/preflight";
+import { version as bunVersion } from "bun";
+import {
+  assertSupportedBunVersion,
+  assertSupportedNodeVersion,
+  parseNodeVersion,
+} from "../src/preflight";
+
+describe("Bun preflight", () => {
+  test("accepts the running Bun release and newer ones", () => {
+    for (const version of [bunVersion, "99.0.0"]) {
+      expect(() => assertSupportedBunVersion(version)).not.toThrow();
+    }
+  });
+
+  test("rejects a Bun release older than the engines range", () => {
+    expect(() => assertSupportedBunVersion("1.3.14")).toThrow(
+      "This run uses Bun 1.3.14."
+    );
+  });
+});
 
 describe("Node.js preflight", () => {
   test("parses standard Node.js version output", () => {

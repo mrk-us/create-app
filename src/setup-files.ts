@@ -14,6 +14,7 @@ export interface SetupState {
   convex?: {
     deploymentName?: string;
     projectSlug: string;
+    projectSlugConfirmed?: boolean;
     teamSlug: string;
   };
   lastFailure?: {

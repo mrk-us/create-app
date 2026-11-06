@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PromptCancelledError } from "../src/clack-prompts";
-import type { ProjectRequest } from "../src/domain";
+import { type ProjectRequest, projectSlug } from "../src/domain";
 import { applyProjectNaming, composeProject } from "../src/generate";
 import type { ProvisionPromptClient } from "../src/provider-prompts";
 import {
@@ -13,9 +13,15 @@ import {
   executeCommand,
   provisionProject,
 } from "../src/provision";
-import { readEnvFile, upsertEnvFile } from "../src/setup-files";
+import {
+  readEnvFile,
+  readSetupState,
+  upsertEnvFile,
+  writeSetupState,
+} from "../src/setup-files";
 
 const templateCheckout = resolve(import.meta.dir, "../../starter-boilerplate");
+const PLACEHOLDER_SECRET_PATTERN = /^whsec_[\w-]{43}$/;
 let outputRoot = "";
 
 const request: ProjectRequest = {
@@ -69,7 +75,12 @@ const createExecutor = (
     }
     if (has(options, "project", "create")) {
       mutations.push("convex.project");
-      return successful();
+      const slug = projectSlug(options.command.at(-1) ?? "");
+      return {
+        exitCode: 0,
+        stderr: `Created project ${slug} in team acme-team, manage it at https://dashboard.convex.dev/t/acme-team/${slug}`,
+        stdout: "",
+      };
     }
     if (has(options, "deployment", "create")) {
       const reference = options.command[options.command.indexOf("create") + 1];
@@ -136,6 +147,9 @@ const createExecutor = (
     if (has(options, "resend-cli@2.16.0", "api-keys", "list")) {
       return successful('{"object":"list","data":[]}');
     }
+    if (has(options, "resend-cli@2.16.0", "webhooks", "list")) {
+      return successful('{"object":"list","data":[]}');
+    }
     if (has(options, "resend-cli@2.16.0", "webhooks", "create")) {
       mutations.push("resend.webhook");
       return successful(
@@ -188,22 +202,11 @@ Use the keys above to start building your integration.`);
         "@stripe/cli@1.50.5",
         "billing_portal",
         "configurations",
-        "list"
-      )
-    ) {
-      return successful('{"object":"list","data":[{"id":"bpc_default"}]}');
-    }
-    if (
-      has(
-        options,
-        "@stripe/cli@1.50.5",
-        "billing_portal",
-        "configurations",
-        "update"
+        "create"
       )
     ) {
       mutations.push("stripe.portal");
-      return successful('{"id":"bpc_default"}');
+      return successful('{"id":"bpc_app"}');
     }
     if (has(options, "@stripe/cli@1.50.5", "webhook_endpoints", "list")) {
       return successful('{"object":"list","data":[]}');
@@ -245,15 +248,29 @@ const prompts = (
     calls.push("stripe-claim");
     return Promise.resolve(stripeClaimChoice);
   },
-  stripeEmail: () => {
-    calls.push("stripe-email");
-    return Promise.resolve("unused@example.com");
+  stripeEmail: (suggestedEmail) => {
+    calls.push(`stripe-email:${suggestedEmail}`);
+    return Promise.resolve("confirmed@example.com");
   },
   stripeSetupMethod: () => {
     calls.push("stripe-setup");
     return Promise.resolve(stripeSetupMethod);
   },
 });
+
+const generate = async (name: string): Promise<string> => {
+  const destination = join(outputRoot, name);
+  await composeProject({
+    destination,
+    request,
+    templatePath: templateCheckout,
+  });
+  await applyProjectNaming({ destination, request });
+  return destination;
+};
+
+const setupState = async (destination: string) =>
+  await readSetupState(destination);
 
 beforeAll(async () => {
   outputRoot = await mkdtemp(join(tmpdir(), "create-app-provision-"));
@@ -380,10 +397,11 @@ describe("provider provisioning", () => {
       "convex.push.2",
     ]);
     expect(promptCalls).toEqual([
+      expect.stringContaining("Convex project and cloud dev deployment"),
       "resend-key",
       "resend-from",
       "stripe-setup",
-      expect.stringContaining("Convex project and cloud dev deployment"),
+      "stripe-email:developer@example.com",
       "stripe-claim",
     ]);
     expect(reports).toContain("Creating Stripe Pro product");
@@ -407,7 +425,7 @@ describe("provider provisioning", () => {
       RESEND_API_KEY: "re_bootstrap",
       RESEND_FROM_EMAIL: "onboarding@resend.dev",
       RESEND_WEBHOOK_SECRET: "whsec_resend",
-      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_default",
+      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_app",
       STRIPE_SECRET_KEY: "rkcs_stripe",
       STRIPE_WEBHOOK_SECRET: "whsec_stripe",
       WORKOS_WEBHOOK_SECRET: "workos_signing_secret",
@@ -415,7 +433,7 @@ describe("provider provisioning", () => {
     expect(backendEnv.WORKOS_ACTION_SECRET?.length).toBeGreaterThanOrEqual(32);
     expect(convexEnvironmentUpdates[0]).toMatchObject({
       WORKOS_ACTION_SECRET: backendEnv.WORKOS_ACTION_SECRET,
-      WORKOS_WEBHOOK_SECRET: "whsec_create_app_initial_setup",
+      WORKOS_WEBHOOK_SECRET: expect.stringMatching(PLACEHOLDER_SECRET_PATTERN),
     });
     expect(convexEnvironmentUpdates.at(-1)).toMatchObject({
       RESEND_API_KEY: "re_bootstrap",
@@ -748,5 +766,496 @@ describe("provider provisioning", () => {
     expect(
       await readEnvFile(join(destination, "packages/backend/.env.local"))
     ).not.toHaveProperty("RESEND_API_KEY");
+  });
+
+  test("does not pass a surrounding project's deployment to commands", async () => {
+    const names = [
+      "CONVEX_DEPLOYMENT",
+      "CONVEX_DEPLOY_KEY",
+      "CONVEX_SELF_HOSTED_ADMIN_KEY",
+      "CONVEX_SELF_HOSTED_URL",
+    ];
+    const original = names.map((name) => process.env[name]);
+    for (const name of names) {
+      process.env[name] = "surrounding-project";
+    }
+    try {
+      const result = await executeCommand({
+        command: [
+          process.execPath,
+          "-e",
+          "console.log(JSON.stringify(process.env))",
+        ],
+        cwd: outputRoot,
+        env: { CONVEX_DEPLOYMENT: "explicit" },
+      });
+      const childEnv = JSON.parse(result.stdout);
+      expect(childEnv.CONVEX_DEPLOYMENT).toBe("explicit");
+      expect(childEnv.CONVEX_DEPLOY_KEY).toBeUndefined();
+      expect(childEnv.CONVEX_SELF_HOSTED_ADMIN_KEY).toBeUndefined();
+      expect(childEnv.CONVEX_SELF_HOSTED_URL).toBeUndefined();
+    } finally {
+      for (const [index, name] of names.entries()) {
+        const value = original[index];
+        if (value === undefined) {
+          Reflect.deleteProperty(process.env, name);
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
+  test("logs in when Convex reports a logged-out status with exit code zero", async () => {
+    const destination = await generate("convex-logged-out");
+    const baseExecutor = createExecutor(destination, [], []);
+    let loggedIn = false;
+    const commands: string[] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "login", "status") && !loggedIn) {
+        return { exitCode: 0, stderr: "Status: Not logged in", stdout: "" };
+      }
+      if (options.command.at(-1) === "login") {
+        commands.push("login");
+        loggedIn = true;
+        return successful();
+      }
+      return await baseExecutor(options);
+    };
+    const promptCalls: string[] = [];
+
+    await provisionProject({
+      destination,
+      execute,
+      prompts: prompts(promptCalls),
+    });
+
+    expect(commands).toEqual(["login"]);
+    expect(promptCalls[1]).toBe("resend-key");
+  });
+
+  test("stops and records preflight when Convex login does not complete", async () => {
+    const destination = await generate("convex-login-fails");
+    const baseExecutor = createExecutor(destination, [], []);
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "login", "status")) {
+        return { exitCode: 0, stderr: "Status: Not logged in", stdout: "" };
+      }
+      if (options.command.at(-1) === "login") {
+        return successful();
+      }
+      return await baseExecutor(options);
+    };
+    const promptCalls: string[] = [];
+
+    await expect(
+      provisionProject({
+        destination,
+        execute,
+        prompts: prompts(promptCalls),
+      })
+    ).rejects.toThrow("Convex login did not complete");
+
+    expect(promptCalls).toHaveLength(1);
+    expect(await setupState(destination)).toMatchObject({
+      lastFailure: { stage: "preflight" },
+    });
+  });
+
+  test("asks for consent before commands and provider keys", async () => {
+    const destination = await generate("consent-first");
+    const commands: string[][] = [];
+    const promptCalls: string[] = [];
+
+    await expect(
+      provisionProject({
+        destination,
+        execute: (options) => {
+          commands.push(options.command);
+          return Promise.resolve(successful());
+        },
+        prompts: {
+          ...prompts(promptCalls),
+          confirmProvisioning: () => {
+            promptCalls.push("declined");
+            return Promise.resolve(false);
+          },
+        },
+      })
+    ).rejects.toBeInstanceOf(PromptCancelledError);
+
+    expect(commands).toEqual([]);
+    expect(promptCalls).toEqual(["declined"]);
+  });
+
+  test("names the project with the display name and uses the reported slug", async () => {
+    const destination = await generate("convex-other-slug");
+    const mutations: string[] = [];
+    const baseExecutor = createExecutor(destination, mutations, []);
+    const projectCommands: string[][] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "project", "create")) {
+        projectCommands.push(options.command);
+        return {
+          exitCode: 0,
+          stderr:
+            "Created project \u001B[1macme-books-2\u001B[22m in team \u001B[1macme-team\u001B[22m, manage it at https://dashboard.convex.dev",
+          stdout: "",
+        };
+      }
+      return await baseExecutor(options);
+    };
+
+    const state = await provisionProject({
+      destination,
+      execute,
+      prompts: prompts([]),
+    });
+
+    expect(projectCommands[0]?.slice(-5)).toEqual([
+      "create",
+      "--team",
+      "acme-team",
+      "--",
+      "Acme Books",
+    ]);
+    expect(mutations).toContain(
+      "convex.deployment:acme-team:acme-books-2:dev/create-app"
+    );
+    expect(state?.convex?.projectSlug).toBe("acme-books-2");
+  });
+
+  test("stops when Convex does not report the created project slug", async () => {
+    const destination = await generate("convex-no-slug");
+    const mutations: string[] = [];
+    const baseExecutor = createExecutor(destination, mutations, []);
+    const execute: CommandExecutor = async (options) =>
+      has(options, "project", "create")
+        ? successful()
+        : await baseExecutor(options);
+
+    await expect(
+      provisionProject({ destination, execute, prompts: prompts([]) })
+    ).rejects.toThrow("did not report the project slug");
+
+    expect(mutations).toEqual([]);
+  });
+
+  test("selects an existing deployment after a lost creation reply", async () => {
+    const destination = await generate("convex-lost-deployment");
+    const baseExecutor = createExecutor(destination, [], []);
+    let createAttempts = 0;
+    const selected: string[] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "deployment", "create")) {
+        createAttempts += 1;
+        if (createAttempts === 1) {
+          await baseExecutor(options);
+          return { exitCode: 1, stderr: "connection reset", stdout: "" };
+        }
+        return { exitCode: 1, stderr: "already exists", stdout: "" };
+      }
+      if (has(options, "deployment", "select")) {
+        selected.push(options.command.at(-1) ?? "");
+        return successful();
+      }
+      return await baseExecutor(options);
+    };
+
+    await provisionProject({ destination, execute, prompts: prompts([]) });
+
+    expect(selected).toEqual(["acme-team:acme-books:dev/create-app"]);
+  });
+
+  test("does not select a deployment from an unconfirmed project slug", async () => {
+    const destination = await generate("convex-unconfirmed-slug");
+    await writeSetupState(destination, {
+      completedStages: ["consent", "convex.project"],
+      convex: { projectSlug: "acme-books", teamSlug: "acme-team" },
+      project: {
+        displayName: request.displayName,
+        path: destination,
+        slug: request.slug,
+      },
+      schemaVersion: 1,
+      selectionId: "tanstack-stripe-marketing-electron",
+      updatedAt: new Date().toISOString(),
+    });
+    const baseExecutor = createExecutor(destination, [], []);
+    const selected: string[] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "deployment", "create")) {
+        return { exitCode: 1, stderr: "already exists", stdout: "" };
+      }
+      if (has(options, "deployment", "select")) {
+        selected.push(options.command.at(-1) ?? "");
+        return successful();
+      }
+      return await baseExecutor(options);
+    };
+
+    await expect(
+      provisionProject({ destination, execute, prompts: prompts([]) })
+    ).rejects.toThrow("already exists");
+
+    expect(selected).toEqual([]);
+  });
+
+  test("replaces only the Resend webhook at this deployment's URL", async () => {
+    const destination = await generate("resend-lost-reply");
+    const preset = JSON.parse(
+      await readFile(join(destination, ".starter/preset.json"), "utf8")
+    );
+    const baseExecutor = createExecutor(destination, [], []);
+    const deleted: string[] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "resend-cli@2.16.0", "webhooks", "list")) {
+        return successful(
+          JSON.stringify({
+            data: [
+              {
+                endpoint: `https://swift-otter-123.convex.site${preset.provisioning.resend.webhookPath}`,
+                id: "stale",
+              },
+              { endpoint: "https://other.example.com/hook", id: "other" },
+            ],
+          })
+        );
+      }
+      if (has(options, "resend-cli@2.16.0", "webhooks", "delete")) {
+        deleted.push(options.command.at(-3) ?? "");
+        return successful();
+      }
+      return await baseExecutor(options);
+    };
+
+    await provisionProject({ destination, execute, prompts: prompts([]) });
+
+    expect(deleted).toEqual(["stale"]);
+    expect(
+      await readEnvFile(join(destination, "packages/backend/.env.local"))
+    ).toMatchObject({ RESEND_WEBHOOK_SECRET: "whsec_resend" });
+  });
+
+  test("replaces only the Stripe webhook at this deployment's URL", async () => {
+    const destination = await generate("stripe-lost-reply");
+    const preset = JSON.parse(
+      await readFile(join(destination, ".starter/preset.json"), "utf8")
+    );
+    const baseExecutor = createExecutor(destination, [], []);
+    const deleted: string[] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "@stripe/cli@1.50.5", "webhook_endpoints", "list")) {
+        return successful(
+          JSON.stringify({
+            data: [
+              {
+                id: "we_stale",
+                url: `https://swift-otter-123.convex.site${preset.provisioning.stripe.webhookPath}`,
+              },
+              { id: "we_other", url: "https://other.example.com/hook" },
+            ],
+          })
+        );
+      }
+      if (has(options, "@stripe/cli@1.50.5", "webhook_endpoints", "delete")) {
+        deleted.push(
+          options.command[options.command.indexOf("delete") + 1] ?? ""
+        );
+        return successful('{"deleted":true}');
+      }
+      return await baseExecutor(options);
+    };
+
+    await provisionProject({ destination, execute, prompts: prompts([]) });
+
+    expect(deleted).toEqual(["we_stale"]);
+    expect(
+      await readEnvFile(join(destination, "packages/backend/.env.local"))
+    ).toMatchObject({ STRIPE_WEBHOOK_SECRET: "whsec_stripe" });
+  });
+
+  test("creates a new price when an archived price holds the lookup key", async () => {
+    const destination = await generate("stripe-archived-price");
+    const baseExecutor = createExecutor(destination, [], []);
+    const createCommands: string[][] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "@stripe/cli@1.50.5", "prices", "list")) {
+        const yearly = options.command.includes("--lookup-keys=pro_yearly");
+        return successful(
+          JSON.stringify({
+            data: [
+              {
+                active: false,
+                currency: "usd",
+                id: "price_archived",
+                product: "prod_acme_books_pro",
+                recurring: { interval: yearly ? "year" : "month" },
+                unit_amount: yearly ? 8000 : 800,
+              },
+            ],
+          })
+        );
+      }
+      if (has(options, "@stripe/cli@1.50.5", "prices", "create")) {
+        createCommands.push(options.command);
+      }
+      return await baseExecutor(options);
+    };
+
+    const state = await provisionProject({
+      destination,
+      execute,
+      prompts: prompts([]),
+    });
+
+    expect(state?.providers?.stripe?.monthlyPriceId).toBe("price_month");
+    expect(state?.providers?.stripe?.yearlyPriceId).toBe("price_year");
+    expect(createCommands[0]).toContain("--transfer-lookup-key=true");
+    expect(
+      createCommands[0]?.some(
+        (part) =>
+          part.startsWith("--idempotency=") && part.endsWith("-price_archived")
+      )
+    ).toBe(true);
+  });
+
+  test("creates a portal configuration for this app only", async () => {
+    const destination = await generate("stripe-own-portal");
+    const baseExecutor = createExecutor(destination, [], []);
+    const portalCommands: string[][] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "billing_portal")) {
+        portalCommands.push(options.command);
+      }
+      return await baseExecutor(options);
+    };
+
+    await provisionProject({ destination, execute, prompts: prompts([]) });
+
+    expect(portalCommands).toHaveLength(1);
+    expect(portalCommands[0]).toContain("create");
+    expect(portalCommands[0]).toContain("--name=Acme Books");
+    expect(portalCommands[0]).not.toContain("update");
+  });
+
+  test("uses the confirmed email for the claimable sandbox", async () => {
+    const destination = await generate("stripe-confirmed-email");
+    const baseExecutor = createExecutor(destination, [], []);
+    const sandboxCommands: string[][] = [];
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "@stripe/cli@1.50.5", "sandbox", "create")) {
+        sandboxCommands.push(options.command);
+      }
+      return await baseExecutor(options);
+    };
+
+    await provisionProject({ destination, execute, prompts: prompts([]) });
+
+    expect(sandboxCommands[0]).toContain("confirmed@example.com");
+  });
+
+  test("generates a different placeholder webhook secret for each setup", async () => {
+    const placeholderFromSetup = async (name: string) => {
+      const destination = await generate(name);
+      const updates: Record<string, string | undefined>[] = [];
+      await provisionProject({
+        destination,
+        execute: createExecutor(destination, [], updates),
+        prompts: prompts([]),
+      });
+      return updates[0]?.WORKOS_WEBHOOK_SECRET;
+    };
+
+    const first = await placeholderFromSetup("placeholder-one");
+    const second = await placeholderFromSetup("placeholder-two");
+
+    expect(first).toEqual(expect.stringMatching(PLACEHOLDER_SECRET_PATTERN));
+    expect(second).toEqual(expect.stringMatching(PLACEHOLDER_SECRET_PATTERN));
+    expect(first).not.toBe(second);
+  });
+
+  test("keeps secrets out of stored and thrown failures", async () => {
+    const destination = await generate("redacted-failure");
+    const baseExecutor = createExecutor(destination, [], []);
+    const execute: CommandExecutor = async (options) => {
+      if (has(options, "@stripe/cli@1.50.5", "products", "retrieve")) {
+        const { WORKOS_ACTION_SECRET: actionSecret } = await readEnvFile(
+          join(destination, "packages/backend/.env.local")
+        );
+        return {
+          exitCode: 1,
+          stderr: `request failed key=sk_test_LEAKMARK action=${actionSecret} resend=re_bootstrap_key`,
+          stdout: "",
+        };
+      }
+      return await baseExecutor(options);
+    };
+
+    const error = await provisionProject({
+      destination,
+      execute,
+      prompts: prompts([]),
+    }).catch((caught: unknown) => caught);
+
+    const { WORKOS_ACTION_SECRET: actionSecret } = await readEnvFile(
+      join(destination, "packages/backend/.env.local")
+    );
+    const stored = await readFile(
+      join(destination, ".starter/setup-state.json"),
+      "utf8"
+    );
+    for (const text of [(error as Error).message, stored]) {
+      expect(text).toContain("request failed key=[redacted]");
+      expect(text).not.toContain("LEAKMARK");
+      expect(text).not.toContain("re_bootstrap");
+      expect(text).not.toContain(actionSecret ?? "missing action secret");
+    }
+  });
+
+  test("keeps secrets out of Stripe API errors with exit code zero", async () => {
+    const destination = await generate("redacted-stripe-error");
+    const baseExecutor = createExecutor(destination, [], []);
+    const execute: CommandExecutor = async (options) =>
+      has(options, "@stripe/cli@1.50.5", "prices", "list")
+        ? successful(
+            '{"error":{"message":"Invalid key provided: rk_test_LEAKMARK"}}'
+          )
+        : await baseExecutor(options);
+
+    const error = await provisionProject({
+      destination,
+      execute,
+      prompts: prompts([]),
+    }).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toContain(
+      "Invalid key provided: [redacted]"
+    );
+    expect(await setupState(destination)).toMatchObject({
+      lastFailure: {
+        message: expect.not.stringContaining("LEAKMARK"),
+        stage: "stripe.prices",
+      },
+    });
+  });
+
+  test("points at the terminal output when an interactive command fails", async () => {
+    const destination = await generate("interactive-push-failure");
+    const baseExecutor = createExecutor(destination, [], []);
+    const execute: CommandExecutor = async (options) =>
+      options.interactive && has(options, "dev", "--once")
+        ? { exitCode: 1, stderr: "", stdout: "" }
+        : await baseExecutor(options);
+
+    const error = await provisionProject({
+      destination,
+      execute,
+      prompts: prompts([]),
+    }).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toBe(
+      "Convex development push failed.\nSee the output above."
+    );
   });
 });

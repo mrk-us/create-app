@@ -424,7 +424,9 @@ describe("template integration", () => {
       join(destination, "apps/desktop/electron-builder.yml"),
       "utf8"
     );
+    expect(desktopPackage.author).toBe('Acme "Books"');
     expect(desktopPackage.productName).toBe('Acme "Books"');
+    expect(electronBuilder).toContain("appId: com.acme-books.app");
     expect(electronBuilder).toContain('productName: "Acme \\"Books\\""');
     expect(await detectProjectSkillStack(destination)).toEqual({
       clerk: false,

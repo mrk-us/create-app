@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { resolve } from "node:path";
-import { intro, log, note, outro, spinner } from "@clack/prompts";
+import { cancel, intro, log, note, outro, spinner } from "@clack/prompts";
 import packageJson from "../package.json" with { type: "json" };
 import { HELP_TEXT, parseArgs } from "./args";
 import { clackPrompts, PromptCancelledError } from "./clack-prompts";
@@ -13,11 +13,16 @@ import {
 import {
   applyProjectNaming,
   assertDestinationAvailable,
+  assertGeneratedProject,
+  assertGitIdentity,
+  assertOutsideParentWorkspace,
+  type CommitProjectResult,
   checkProject,
   commitProject,
   composeProject,
   installProject,
   installProjectSkills,
+  isProjectPrepared,
   resolveTemplate,
   typecheckProject,
 } from "./generate";
@@ -56,24 +61,93 @@ const runTasks = async (definitions: TaskDefinition[]): Promise<void> => {
   await runTasks(remainingDefinitions);
 };
 
-const runProviderSetup = async (
-  destination: string
-): Promise<SetupState | null> => {
+const resumeCommand = (destination: string): string =>
+  `bunx @mrk-us/create-app --resume ${destination}`;
+
+const withResumeHint = async <Result>(
+  destination: string,
+  work: () => Promise<Result>
+): Promise<Result> => {
   try {
-    return await provisionProject({
-      destination,
-      prompts: clackProviderPrompts,
-      report: (message) => log.step(message),
-    });
+    return await work();
   } catch (error) {
+    const hint = `Resume with: ${resumeCommand(destination)}`;
+    if (error instanceof PromptCancelledError) {
+      cancel(`${error.message}\n${hint}`);
+      throw error;
+    }
     const message =
-      error instanceof Error ? error.message : "Provider setup failed.";
-    throw new Error(
-      `${message}\nResume with: bunx @mrk-us/create-app --resume ${destination}`,
-      { cause: error }
+      error instanceof Error ? error.message : "Project setup failed.";
+    throw new Error(`${message}\n${hint}`, { cause: error });
+  }
+};
+
+const runProviderSetup = (destination: string): Promise<SetupState | null> =>
+  provisionProject({
+    destination,
+    prompts: clackProviderPrompts,
+    report: (message) => log.step(message),
+  });
+
+const prepareProject = async (
+  destination: string,
+  { checks, install }: { checks: boolean; install: boolean }
+): Promise<void> => {
+  let skillFailures: string[] = [];
+  await runTasks([
+    {
+      enabled: install,
+      run: async () => {
+        await installProject(destination);
+        return "Installed dependencies";
+      },
+      title: "Installing dependencies",
+    },
+    {
+      enabled: checks,
+      run: async () => {
+        await checkProject(destination);
+        return "Passed Ultracite";
+      },
+      title: "Checking code",
+    },
+    {
+      enabled: checks,
+      run: async () => {
+        await typecheckProject(destination);
+        return "Passed typechecking";
+      },
+      title: "Typechecking workspaces",
+    },
+    {
+      enabled: install,
+      run: async () => {
+        skillFailures = await installProjectSkills(destination);
+        return skillFailures.length > 0
+          ? "Some project skills were not installed"
+          : "Installed project skills";
+      },
+      title: "Installing project skills",
+    },
+  ]);
+  if (skillFailures.length > 0) {
+    log.warn(
+      `Setup continues without them. To try again, run these from the project directory:\n${skillFailures.join("\n")}`
     );
   }
 };
+
+const COMMIT_RESULTS: Record<CommitProjectResult, string> = {
+  "already-initialized": "Initial commit already exists",
+  committed: "Committed init",
+  "updated-generated-files": "Committed updated Convex generated files",
+};
+
+const commitTask = (destination: string, enabled = true): TaskDefinition => ({
+  enabled,
+  run: async () => COMMIT_RESULTS[await commitProject(destination)],
+  title: "Creating initial commit",
+});
 
 const printProviderNotes = (state: SetupState | null): void => {
   if (state?.providers?.workos) {
@@ -141,22 +215,22 @@ const run = async (): Promise<void> => {
   if (command.kind === "resume") {
     const destination = resolve(command.path);
     intro("create-app provider setup");
-    const state = await runProviderSetup(destination);
-    await runTasks([
-      {
-        run: async () => {
-          const result = await commitProject(destination);
-          return result === "committed"
-            ? "Committed init"
-            : "Initial commit already exists";
-        },
-        title: "Creating initial commit",
-      },
-    ]);
+    await assertGeneratedProject(destination);
+    const state = await withResumeHint(destination, async () => {
+      await assertGitIdentity(destination);
+      if (!(await isProjectPrepared(destination))) {
+        await prepareProject(destination, { checks: true, install: true });
+      }
+      const providerState = await runProviderSetup(destination);
+      await runTasks([commitTask(destination)]);
+      return providerState;
+    });
     printProviderNotes(state);
     note(`cd ${destination}\nbun run dev`, "Next steps");
     outro(
-      `Provider setup complete for ${state?.project.displayName ?? destination}`
+      state
+        ? `Provider setup complete for ${state.project.displayName}`
+        : `${destination} has no provider setup to resume.`
     );
     return;
   }
@@ -166,6 +240,7 @@ const run = async (): Promise<void> => {
   const request = await collectProjectRequest(clackPrompts);
   const destination = resolve(process.cwd(), request.slug);
   await assertDestinationAvailable(destination);
+  await assertOutsideParentWorkspace(destination);
   note(selectionSummary(request), "Project configuration");
 
   const templateSpinner = spinner();
@@ -207,66 +282,38 @@ const run = async (): Promise<void> => {
     await template.cleanup();
   }
 
-  await runTasks([
-    {
-      enabled: !command.skipInstall,
-      run: async () => {
-        await installProject(destination);
-        return "Installed dependencies";
-      },
-      title: "Installing dependencies",
-    },
-    {
-      enabled: !command.skipChecks,
-      run: async () => {
-        await checkProject(destination);
-        return "Passed Ultracite";
-      },
-      title: "Checking code",
-    },
-    {
-      enabled: !command.skipChecks,
-      run: async () => {
-        await typecheckProject(destination);
-        return "Passed typechecking";
-      },
-      title: "Typechecking workspaces",
-    },
-    {
-      enabled: !command.skipInstall,
-      run: async () => {
-        await installProjectSkills(destination);
-        return "Installed project skills";
-      },
-      title: "Installing project skills",
-    },
-  ]);
-
   const providers = requiredProviders(request.selection);
-  if (providers.length > 0 && command.skipProvision) {
-    note(
-      `Provider setup was skipped. Resume it with:\n\nbunx @mrk-us/create-app --resume ${destination}`,
-      "Provider setup skipped"
-    );
-  } else if (providers.length > 0) {
-    const state = await runProviderSetup(destination);
-    printProviderNotes(state);
-  }
+  await withResumeHint(destination, async () => {
+    if (!command.skipInstall) {
+      await assertGitIdentity(destination);
+    }
+    await prepareProject(destination, {
+      checks: !command.skipChecks,
+      install: !command.skipInstall,
+    });
 
-  await runTasks([
-    {
-      enabled: !command.skipInstall,
-      run: async () => {
-        const result = await commitProject(destination);
-        return result === "committed"
-          ? "Committed init"
-          : "Initial commit already exists";
-      },
-      title: "Creating initial commit",
-    },
-  ]);
+    if (providers.length > 0 && command.skipProvision) {
+      note(
+        `Provider setup was skipped. Resume it with:\n\n${resumeCommand(destination)}`,
+        "Provider setup skipped"
+      );
+    } else if (providers.length > 0) {
+      printProviderNotes(await runProviderSetup(destination));
+    }
 
-  note(`cd ${request.slug}\nbun run dev`, "Next steps");
+    await runTasks([commitTask(destination, !command.skipInstall)]);
+  });
+
+  const needsResume =
+    command.skipInstall || (providers.length > 0 && command.skipProvision);
+  note(
+    [
+      ...(needsResume ? [resumeCommand(destination)] : []),
+      `cd ${request.slug}`,
+      "bun run dev",
+    ].join("\n"),
+    "Next steps"
+  );
   outro(`Created ${request.displayName}`);
 };
 

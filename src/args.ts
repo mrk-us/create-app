@@ -17,7 +17,7 @@ Options:
   --skip-install          Skip installs, checks, provider setup, and init commit
   --skip-checks           Install dependencies without running static checks
   --skip-provision        Generate provider files without creating resources
-  --resume <path>         Resume provider setup in a generated project
+  --resume <path>         Finish setting up a generated project
   --help                  Show this help
   --version               Show the CLI version`;
 

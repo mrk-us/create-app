@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PromptCancelledError } from "../src/clack-prompts";
 import type { ProjectRequest } from "../src/domain";
 import { applyProjectNaming, composeProject } from "../src/generate";
 import type { ProvisionPromptClient } from "../src/provider-prompts";
@@ -58,9 +59,13 @@ const createExecutor = (
       return successful("developer@example.com");
     }
     if (has(options, "login", "status")) {
-      return successful(
-        "Status: Logged in\nTeams: 1 team accessible\n  - Acme team (acme-team)"
-      );
+      // The Convex CLI prints its team list to stderr.
+      return {
+        exitCode: 0,
+        stderr:
+          "Status: Logged in\nTeams: 1 team accessible\n  - Acme team (acme-team)",
+        stdout: "",
+      };
     }
     if (has(options, "project", "create")) {
       mutations.push("convex.project");
@@ -650,15 +655,98 @@ describe("provider provisioning", () => {
         prompts: prompts([]),
       })
     ).rejects.toThrow("temporary Resend failure");
+    const resumedPromptCalls: string[] = [];
     await provisionProject({
       destination,
       execute,
-      prompts: prompts([]),
+      prompts: prompts(resumedPromptCalls),
     });
 
     expect(mutations).not.toContain("resend.key");
     expect(
       mutations.filter((mutation) => mutation === "resend.webhook")
     ).toHaveLength(1);
+    expect(resumedPromptCalls).not.toContain("resend-key");
+    expect(resumedPromptCalls).not.toContain("resend-from");
+  });
+
+  test("keeps the entered Resend details when an earlier stage fails", async () => {
+    const destination = join(outputRoot, "resend-earlier-failure");
+    await composeProject({
+      destination,
+      request,
+      templatePath: templateCheckout,
+    });
+    await applyProjectNaming({
+      destination,
+      request,
+    });
+
+    const baseExecutor = createExecutor(destination, [], []);
+    let failWebhook = true;
+    const execute: CommandExecutor = async (options) => {
+      if (failWebhook && has(options, "workos@0.21.1", "webhook", "create")) {
+        failWebhook = false;
+        return { exitCode: 1, stderr: "temporary WorkOS failure", stdout: "" };
+      }
+      return await baseExecutor(options);
+    };
+
+    const firstPromptCalls: string[] = [];
+    await expect(
+      provisionProject({
+        destination,
+        execute,
+        prompts: prompts(firstPromptCalls),
+      })
+    ).rejects.toThrow("temporary WorkOS failure");
+    expect(firstPromptCalls).toContain("resend-key");
+    expect(firstPromptCalls).toContain("resend-from");
+
+    const resumedPromptCalls: string[] = [];
+    await provisionProject({
+      destination,
+      execute,
+      prompts: prompts(resumedPromptCalls),
+    });
+
+    expect(resumedPromptCalls).not.toContain("resend-key");
+    expect(resumedPromptCalls).not.toContain("resend-from");
+    const backendEnvPath = join(destination, "packages/backend/.env.local");
+    expect(await readEnvFile(backendEnvPath)).toMatchObject({
+      RESEND_API_KEY: "re_bootstrap",
+      RESEND_FROM_EMAIL: "onboarding@resend.dev",
+    });
+    expect((await stat(backendEnvPath)).mode % 0o1000).toBe(0o600);
+  });
+
+  test("declining consent cancels setup and saves nothing", async () => {
+    const destination = join(outputRoot, "declined-consent");
+    await composeProject({
+      destination,
+      request,
+      templatePath: templateCheckout,
+    });
+    await applyProjectNaming({
+      destination,
+      request,
+    });
+
+    const mutations: string[] = [];
+    await expect(
+      provisionProject({
+        destination,
+        execute: createExecutor(destination, mutations, []),
+        prompts: {
+          ...prompts([]),
+          confirmProvisioning: () => Promise.resolve(false),
+        },
+      })
+    ).rejects.toBeInstanceOf(PromptCancelledError);
+
+    expect(mutations).toEqual([]);
+    expect(
+      await readEnvFile(join(destination, "packages/backend/.env.local"))
+    ).not.toHaveProperty("RESEND_API_KEY");
   });
 });

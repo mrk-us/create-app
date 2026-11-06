@@ -14,15 +14,21 @@ import { selectionId } from "../src/domain";
 import {
   applyProjectNaming,
   assertDestinationAvailable,
+  assertGeneratedProject,
+  assertGitIdentity,
+  assertOutsideParentWorkspace,
   checkoutTemplate,
   commitProject,
   composeProject,
   detectProjectSkillStack,
+  isProjectPrepared,
   projectSkillCommands,
   resolveTemplatePath,
   runCommand,
+  runSkillInstallations,
   TEMPLATE_COMMIT,
 } from "../src/generate";
+import { setupStatePath } from "../src/setup-files";
 
 const templateCheckout = resolve(import.meta.dir, "../../starter-boilerplate");
 let outputRoot = "";
@@ -73,8 +79,10 @@ describe("template integration", () => {
   test("builds skill commands from the selected architecture", () => {
     const commandTexts = (stack: Parameters<typeof projectSkillCommands>[0]) =>
       projectSkillCommands(stack).map((command) => command.slice(1).join(" "));
-    const turborepoCommand = "x --bun skills add vercel/turborepo --yes";
-    const nextjsCommand = "x --bun skills add vercel/next.js --yes";
+    const addSkill = (source: string): string =>
+      `x --bun skills add ${source} --agent claude-code codex --yes`;
+    const turborepoCommand = addSkill("vercel/turborepo");
+    const nextjsCommand = addSkill("vercel/next.js");
     const convexCommand = "x --bun --no-install convex ai-files install";
     const emptyStack = {
       clerk: false,
@@ -92,7 +100,7 @@ describe("template integration", () => {
     ]);
     expect(commandTexts({ ...emptyStack, clerk: true })).toEqual([
       turborepoCommand,
-      "x --bun skills add clerk/skills --yes",
+      addSkill("clerk/skills"),
     ]);
     expect(
       commandTexts({
@@ -104,8 +112,8 @@ describe("template integration", () => {
     ).toEqual([
       turborepoCommand,
       convexCommand,
-      "x --bun skills add workos/skills --yes",
-      "x --bun skills add resend/resend-skills --yes",
+      addSkill("workos/skills"),
+      addSkill("resend/resend-skills"),
     ]);
     expect(
       commandTexts({
@@ -120,9 +128,9 @@ describe("template integration", () => {
       turborepoCommand,
       nextjsCommand,
       convexCommand,
-      "x --bun skills add workos/skills --yes",
-      "x --bun skills add https://docs.stripe.com --yes",
-      "x --bun skills add resend/resend-skills --yes",
+      addSkill("workos/skills"),
+      addSkill("https://docs.stripe.com"),
+      addSkill("resend/resend-skills"),
     ]);
   });
 
@@ -426,5 +434,204 @@ describe("template integration", () => {
       stripe: false,
       workos: true,
     });
+  });
+
+  test("inserts replacement patterns in a project name literally", async () => {
+    const destination = join(outputRoot, "replacement-patterns");
+    const displayName = "Cash $& Carry $1 $$ $` $'";
+    const projectRequest = {
+      ...request({
+        capability: "plain",
+        electron: true,
+        framework: "next",
+        marketing: false,
+      }),
+      displayName,
+    };
+
+    await composeProject({
+      destination,
+      request: projectRequest,
+      templatePath: templateCheckout,
+    });
+    await applyProjectNaming({ destination, request: projectRequest });
+
+    const contents = await Promise.all(
+      [
+        "README.md",
+        "apps/desktop/electron-builder.yml",
+        "packages/config/src/index.ts",
+      ].map((path) => readFile(join(destination, path), "utf8"))
+    );
+    for (const content of contents) {
+      expect(content).toContain(displayName);
+    }
+  });
+
+  test("continues past a skill that fails to install", async () => {
+    const destination = join(outputRoot, "skill-failures");
+    await mkdir(destination, { recursive: true });
+    const failing = [process.execPath, "-e", "process.exit(1)"];
+    const missingOutput = [process.execPath, "-e", "process.exit(0)"];
+
+    const failures = await runSkillInstallations(destination, [
+      { command: failing, expectedPaths: [] },
+      { command: missingOutput, expectedPaths: ["missing/SKILL.md"] },
+      {
+        command: [
+          process.execPath,
+          "-e",
+          'await Bun.write("installed/SKILL.md", "")',
+        ],
+        expectedPaths: ["installed/SKILL.md"],
+      },
+    ]);
+
+    expect(failures).toEqual([failing.join(" "), missingOutput.join(" ")]);
+    expect(await exists(join(destination, "installed/SKILL.md"))).toBe(true);
+  });
+
+  test("commits only regenerated Convex files after the first commit", async () => {
+    const destination = join(outputRoot, "regenerated-convex-files");
+    const generatedFile = join(
+      destination,
+      "packages/backend/convex/_generated/api.d.ts"
+    );
+    const git = (...args: string[]): Promise<string> =>
+      runCommand({ command: ["git", ...args], cwd: destination });
+    await mkdir(join(destination, "packages/backend/convex/_generated"), {
+      recursive: true,
+    });
+    await git("init");
+    await git("config", "user.name", "create-app test");
+    await git("config", "user.email", "create-app@example.com");
+    await writeFile(generatedFile, "// first\n", "utf8");
+    await writeFile(join(destination, "notes.md"), "first\n", "utf8");
+    expect(await commitProject(destination)).toBe("committed");
+
+    await writeFile(generatedFile, "// second\n", "utf8");
+    await writeFile(join(destination, "notes.md"), "second\n", "utf8");
+    expect(await commitProject(destination)).toBe("updated-generated-files");
+
+    expect(await git("status", "--porcelain")).toBe("M notes.md");
+    expect(await git("log", "-1", "--format=%s")).toBe(
+      "chore: update Convex generated files"
+    );
+    expect(await git("log", "-1", "--format=%s", "production")).toBe("init");
+    expect(await commitProject(destination)).toBe("already-initialized");
+  });
+
+  test("rejects a destination inside the nearest parent workspace", async () => {
+    const root = join(outputRoot, "parent-workspaces");
+    const writePackage = async (directory: string, contents: string) => {
+      await mkdir(join(root, directory), { recursive: true });
+      await writeFile(join(root, directory, "package.json"), contents, "utf8");
+    };
+    const rejection = (path: string): Promise<string | undefined> =>
+      assertOutsideParentWorkspace(join(root, path)).then(
+        () => undefined,
+        (error: Error) => error.message
+      );
+    await writePackage(
+      ".",
+      JSON.stringify({
+        workspaces: {
+          packages: [
+            "apps/*",
+            "!apps/skip",
+            "./deep/**",
+            "other/",
+            "plain/*",
+            "broken/*",
+            "near/*/*",
+          ],
+        },
+      })
+    );
+    await writePackage("plain", JSON.stringify({ name: "plain" }));
+    await writePackage("broken", "{");
+    await writePackage("near", JSON.stringify({ workspaces: ["pkg/*"] }));
+
+    expect(await rejection("apps/foo")).toContain(`at ${root},`);
+    expect(await rejection("deep/a/b")).toContain(`at ${root},`);
+    expect(await rejection("other")).toContain(`at ${root},`);
+    expect(await rejection("plain/foo")).toContain(`at ${root},`);
+    expect(await rejection("broken/foo")).toContain(`at ${root},`);
+    expect(await rejection("near/pkg/foo")).toContain(
+      `at ${join(root, "near")},`
+    );
+    expect(await rejection("apps/skip")).toBeUndefined();
+    expect(await rejection("unrelated/foo")).toBeUndefined();
+    expect(await rejection("near/app/foo")).toBeUndefined();
+  });
+
+  test("reports a missing git identity with the commands that set it", async () => {
+    const destination = join(outputRoot, "git-identity");
+    const git = (...args: string[]): Promise<string> =>
+      runCommand({ command: ["git", ...args], cwd: destination });
+    await mkdir(destination, { recursive: true });
+    await git("init");
+    await git("config", "user.useConfigOnly", "true");
+    await git("config", "user.name", "");
+    await git("config", "user.email", "");
+
+    await expect(assertGitIdentity(destination)).rejects.toThrow(
+      "git config --global user.name"
+    );
+
+    await git("config", "user.name", "create-app test");
+    await git("config", "user.email", "create-app@example.com");
+    expect(await assertGitIdentity(destination)).toBeUndefined();
+  });
+
+  test("tells a generated project from a path that is not one", async () => {
+    const destination = join(outputRoot, "resume-target");
+    await expect(assertGeneratedProject(destination)).rejects.toThrow(
+      `No generated project found at ${destination}.`
+    );
+
+    await composeProject({
+      destination,
+      request: request({
+        capability: "plain",
+        electron: false,
+        framework: "next",
+        marketing: false,
+      }),
+      templatePath: templateCheckout,
+    });
+    expect(await assertGeneratedProject(destination)).toBeUndefined();
+  });
+
+  test("treats a project as prepared after setup state or a commit exists", async () => {
+    const destination = join(outputRoot, "prepared-project");
+    const projectRequest = request({
+      capability: "plain",
+      electron: false,
+      framework: "next",
+      marketing: false,
+    });
+    await composeProject({
+      destination,
+      request: projectRequest,
+      templatePath: templateCheckout,
+    });
+    expect(await isProjectPrepared(destination)).toBe(false);
+
+    const statePath = setupStatePath(destination);
+    await writeFile(statePath, "{}\n", "utf8");
+    expect(await isProjectPrepared(destination)).toBe(true);
+    await rm(statePath);
+
+    await runCommand({
+      command: ["git", "config", "user.name", "create-app test"],
+      cwd: destination,
+    });
+    await runCommand({
+      command: ["git", "config", "user.email", "create-app@example.com"],
+      cwd: destination,
+    });
+    await commitProject(destination);
+    expect(await isProjectPrepared(destination)).toBe(true);
   });
 });

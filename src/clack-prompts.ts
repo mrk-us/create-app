@@ -29,7 +29,23 @@ const unwrapPrompt = <Value>(value: Value | typeof CANCEL_SYMBOL): Value => {
   return value;
 };
 
-export const clackPrompts: PromptClient = {
+// A prompt waits forever when stdin cannot answer it. Runs that ask nothing, such
+// as a finished resume, still work without a terminal.
+export const requireTerminal = <Prompts extends object>(
+  prompts: Prompts
+): Prompts =>
+  new Proxy(prompts, {
+    get: (target, property, receiver) => {
+      if (!process.stdin.isTTY) {
+        throw new Error(
+          "create-app needs to ask a question, but no interactive terminal is available. Run it in a terminal."
+        );
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+export const clackPrompts: PromptClient = requireTerminal({
   addAuth: async () =>
     unwrapPrompt(
       await confirm({
@@ -92,4 +108,4 @@ export const clackPrompts: PromptClient = {
         ],
       })
     ),
-};
+});

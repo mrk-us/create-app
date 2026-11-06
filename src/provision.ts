@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawn } from "bun";
+import { PromptCancelledError } from "./clack-prompts";
 import type {
   ProvisionPromptClient,
   StripeSetupMethod,
@@ -394,15 +395,12 @@ const collectInputs = async ({
       cwd: destination,
     });
   }
-  const convexStatus = requireSuccess(
-    convexStatusResult,
-    convexStatusCommand,
-    "Convex login check"
-  );
+  requireSuccess(convexStatusResult, convexStatusCommand, "Convex login check");
   const convexTeam =
     state.convex?.teamSlug ??
     process.env.CONVEX_TEAM ??
-    oneTeamSlug(convexStatus) ??
+    // The Convex CLI prints its team list to stderr.
+    oneTeamSlug(`${convexStatusResult.stdout}\n${convexStatusResult.stderr}`) ??
     (await prompts.convexTeam());
 
   let resendApiKey: string | undefined;
@@ -413,13 +411,18 @@ const collectInputs = async ({
       { command: bunx(RESEND_CLI, "--version"), cwd: destination },
       "Resend CLI preflight"
     );
+    const backendEnv = await readEnvFile(
+      join(destination, "packages/backend/.env.local")
+    );
     resendApiKey =
       process.env.CREATE_APP_RESEND_API_KEY ??
       process.env.RESEND_API_KEY ??
+      backendEnv.RESEND_API_KEY ??
       (await prompts.resendApiKey());
     resendFromEmail =
       state.providers?.resend?.fromEmail ??
       process.env.RESEND_FROM_EMAIL ??
+      backendEnv.RESEND_FROM_EMAIL ??
       (await prompts.resendFromEmail());
     const listCommand = bunx(
       RESEND_CLI,
@@ -1637,11 +1640,16 @@ export const provisionProject = async ({
   });
   if (!hasStage(state, "consent")) {
     if (!(await prompts.confirmProvisioning(provisioningSummary(preset)))) {
-      throw new Error(
-        `Provider setup was not started. Resume later with --resume ${destination}`
-      );
+      throw new PromptCancelledError();
     }
     await completeStage(destination, state, "consent");
+  }
+  // Saved here so a failure in an earlier stage does not ask again on resume.
+  if (inputs.resendApiKey && inputs.resendFromEmail) {
+    await upsertEnvFile(join(destination, "packages/backend/.env.local"), {
+      RESEND_API_KEY: inputs.resendApiKey,
+      RESEND_FROM_EMAIL: inputs.resendFromEmail,
+    });
   }
 
   const rootEnv = await configureConvex({
